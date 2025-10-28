@@ -1,7 +1,7 @@
 ---
 story_number: 1
-title: "Example Telar Story"
-subtitle: "An introduction to digital storytelling"
+title: "Haptic Khipu"
+subtitle: "An object story from the UCSB Art, Architecture & Design Museum"
 layout: story
 data_file: story-1
 ---
