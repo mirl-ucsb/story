@@ -1,5 +1,5 @@
 ---
-title: The Marquisate of San Jorge
+title: How do we read UCSB's AD&A Khipu?
 ---
 
-The territory was transformed into a 'mayorazgo' (entailed estate) that would be passed down to the eldest child, consolidating Spanish landownership.
+Close study of the khipu suggests it was used as a census and possible tributary recording during the Inka or early Colonial period. Composed of brown and cream colored cotton, some mottled, the khipu was mounted to a canvas backing in the reverse, showing us the “back” of the object.

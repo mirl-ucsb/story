@@ -2,12 +2,12 @@
 # https://github.com/UCSB-AMPLab/telar
 
 # Site Settings
-title: Telar
-description: "Telar (Spanish for 'loom') is a static site generator built on Jekyll that weaves together IIIF images, text, and layered contextual information into interactive digital narrative exhibitions. Telar is developed by Adelaida Ávila, Juan Cobo Betancourt, Santiago Muñoz, and students and scholars at the UCSB and UT Archives, Memory, and Preservation Labs."
-baseurl: "/telar"
-url: "https://ampl.clair.ucsb.edu"
-author: ""
-email: ""
+title: Haptic khipu - An object story from the UCSB Art, Architecture & Design Museum
+description: ""
+baseurl: "/story"
+url: "https://mirl-ucsb.github.io"
+author: "Alicia Boswell, Alida Jekabson, Izzy Devlin, Jeff O’Brien, María Lumbreras, Juan Cobo Betancourt"
+email: "mirl@arthistory.ucsb.edu"
 telar_theme: "paisajes" # Options: paisajes, neogranadina, santa-barbara, austin, or custom
 logo: "" # Path to logo image (optional)
 
