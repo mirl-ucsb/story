@@ -1,5 +1,5 @@
 ---
-title: note, Pins
+title: Sampling Results
 ---
 
 A sample was taken from the end of the primary cord, opposite the kayte knot. (A reminder this khipu is mounted backwards). This sample's radiocarbon age was 350 ±20 BP - calibrating the C14 age with the radiocarbon curve for South America provides the range of 1502-1643 (95% confidence)
