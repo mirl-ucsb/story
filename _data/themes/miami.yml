@@ -20,5 +20,5 @@ colors:
     panel_glossary: "#F990E8" # Glossary panel background
 
 fonts:
-  headings: "'Rubik 80s Fade', serif"
+  headings: "'Limelight', serif"
   body: "'Inter', sans-serif"
