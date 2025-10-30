@@ -14,7 +14,7 @@ colors:
 
   # Background colors
   background:
-    button: "#BF5700"         # Button background
+    button: "#0BD2D3"         # Button background
     panel_layer1: "#F990E8"   # Layer 1 panel background
     panel_layer2: "#0BD2D3"   # Layer 2 panel background
     panel_glossary: "#F990E8" # Glossary panel background
