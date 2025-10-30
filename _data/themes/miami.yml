@@ -4,10 +4,10 @@ description: "Retro Cool. Digital Heat."
 colors:
   # Text/Font colors
   text:
-    heading: "#0BD2D3"        # Heading font color
+    heading: "#F990E8"        # Heading font color
     body: "#000000"           # Body text color
     link: "#0BD2D3"           # Hyperlink color (burnt orange)
-    button: "#FFFFFF"         # Button text color
+    button: "#F990E8"         # Button text color
     panel_layer1: "#FFFFFF"   # Layer 1 panel text color
     panel_layer2: "#FFFFFF"   # Layer 2 panel text color
     panel_glossary: "#FFFFFF" # Glossary panel text color
