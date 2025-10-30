@@ -5,19 +5,19 @@ colors:
   # Text/Font colors
   text:
     heading: "#0BD2D3"        # Heading font color
-    body: "#F990E8"           # Body text color
+    body: "#000000"           # Body text color
     link: "#0BD2D3"           # Hyperlink color (burnt orange)
-    button: "#0BD2D3"         # Button text color
-    panel_layer1: "#0BD2D3"   # Layer 1 panel text color
-    panel_layer2: "#F990E8"   # Layer 2 panel text color
-    panel_glossary: "#333F48" # Glossary panel text color
+    button: "#FFFFFF"         # Button text color
+    panel_layer1: "#FFFFFF"   # Layer 1 panel text color
+    panel_layer2: "#FFFFFF"   # Layer 2 panel text color
+    panel_glossary: "#FFFFFF" # Glossary panel text color
 
   # Background colors
   background:
     button: "#BF5700"         # Button background
-    panel_layer1: "#0BD2D3"   # Layer 1 panel background
-    panel_layer2: "#000000"   # Layer 2 panel background
-    panel_glossary: "#D6D2C4" # Glossary panel background
+    panel_layer1: "#F990E8"   # Layer 1 panel background
+    panel_layer2: "#0BD2D3"   # Layer 2 panel background
+    panel_glossary: "#F990E8" # Glossary panel background
 
 fonts:
   headings: "'Rubik 80s Fade', serif"
