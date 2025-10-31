@@ -2,8 +2,8 @@
 # https://github.com/UCSB-AMPLab/telar
 
 # Site Settings
-title: Haptic khipu - An object story from the UCSB Art, Architecture & Design Museum
-description: ""
+title: Haptic khipu
+description: "This project investigates a late Inka, early Colonial khipu in UC Santa Barbara’s Art, Design & Architecture Museum through material, haptic, and digital imaging methods to explore how Andean recordkeeping systems encode knowledge in fiber and form."
 baseurl: "/story"
 url: "https://mirl-ucsb.github.io"
 author: "Alicia Boswell, Alida Jekabson, Izzy Devlin, Jeff O’Brien, María Lumbreras, Juan Cobo Betancourt"
