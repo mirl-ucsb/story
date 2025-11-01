@@ -14,6 +14,47 @@ import urllib.error
 from urllib.parse import urlparse
 import ssl
 
+def process_image_sizes(text):
+    """
+    Replace ![alt](path){size} with HTML img tags with size classes
+
+    Syntax: ![Description](image.jpg){md} or ![Description](image.jpg){medium}
+    Sizes: sm/small, md/medium, lg/large, full
+
+    Default path: /components/images/additional/
+    - Relative paths (no leading /) get prepended with default path
+    - Absolute paths (starting with /) used as-is
+    - URLs (http/https) used as-is
+    """
+    # Map long form to short form for CSS classes
+    size_map = {
+        'small': 'sm',
+        'medium': 'md',
+        'large': 'lg',
+        'full': 'full',
+        'sm': 'sm',
+        'md': 'md',
+        'lg': 'lg'
+    }
+
+    def replace_image(match):
+        alt = match.group(1)
+        src = match.group(2)
+        size_input = match.group(3).lower()
+
+        # Map to CSS class
+        size_class = size_map.get(size_input, 'md')
+
+        # Prepend default path if relative
+        if not src.startswith('/') and not src.startswith('http'):
+            src = f'/components/images/additional/{src}'
+
+        return f'<img src="{src}" alt="{alt}" class="img-{size_class}">'
+
+    pattern = r'!\[([^\]]*)\]\(([^)]+)\)\{(sm|small|md|medium|lg|large|full)\}'
+    return re.sub(pattern, replace_image, text, flags=re.IGNORECASE)
+
+
 def read_markdown_file(file_path):
     """
     Read a markdown file and parse frontmatter
@@ -46,6 +87,9 @@ def read_markdown_file(file_path):
             title_match = re.search(r'title:\s*["\']?(.*?)["\']?\s*$', frontmatter_text, re.MULTILINE)
             title = title_match.group(1) if title_match else ''
 
+            # Process image size syntax before markdown conversion
+            body = process_image_sizes(body)
+
             # Convert markdown to HTML
             html_content = markdown.markdown(body, extensions=['extra', 'nl2br'])
 
@@ -55,7 +99,8 @@ def read_markdown_file(file_path):
             }
         else:
             # No frontmatter, just content
-            html_content = markdown.markdown(content.strip(), extensions=['extra', 'nl2br'])
+            content = process_image_sizes(content.strip())
+            html_content = markdown.markdown(content, extensions=['extra', 'nl2br'])
             return {
                 'title': '',
                 'content': html_content
@@ -149,6 +194,59 @@ def process_project_setup(df):
     # Return stories list structure
     result = {'stories': stories_list}
     return pd.DataFrame([result])
+
+def _find_similar_image_filenames(object_id, images_dir):
+    """
+    Find image files that are similar to object_id but not exact matches.
+
+    Checks for common variations:
+    - Case differences: "MyObject" vs "myobject"
+    - Hyphen/underscore variations: "my-object" vs "my_object" vs "myobject"
+    - Extra characters or minor typos
+
+    Args:
+        object_id: The object ID to match against
+        images_dir: Path object to the images directory
+
+    Returns:
+        List of similar filenames (just the filename, not full path)
+    """
+    import re
+    from difflib import SequenceMatcher
+
+    if not images_dir.exists():
+        return []
+
+    # Normalize object_id for comparison (remove hyphens, underscores, lowercase)
+    normalized_id = re.sub(r'[-_\s]', '', object_id.lower())
+
+    similar_files = []
+    valid_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.tif', '.tiff'}
+
+    for file_path in images_dir.iterdir():
+        if not file_path.is_file():
+            continue
+
+        # Only check image files
+        if file_path.suffix.lower() not in valid_extensions:
+            continue
+
+        # Get filename without extension
+        basename = file_path.stem
+        normalized_file = re.sub(r'[-_\s]', '', basename.lower())
+
+        # Skip if this is the exact object_id (exact matches are checked elsewhere)
+        if basename.lower() == object_id.lower():
+            continue
+
+        # Calculate similarity ratio
+        similarity = SequenceMatcher(None, normalized_id, normalized_file).ratio()
+
+        # Consider similar if > 85% match
+        if similarity > 0.85:
+            similar_files.append(file_path.name)
+
+    return similar_files
 
 def process_objects(df):
     """
@@ -274,7 +372,7 @@ def process_objects(df):
 
             try:
                 req = urllib.request.Request(manifest_url, method='HEAD')
-                req.add_header('User-Agent', 'Telar/0.3.1-beta (IIIF validator)')
+                req.add_header('User-Agent', 'Telar/0.3.3-beta (IIIF validator)')
 
                 with urllib.request.urlopen(req, timeout=5, context=ssl_context) as response:
                     content_type = response.headers.get('Content-Type', '')
@@ -290,7 +388,7 @@ def process_objects(df):
 
                     # Fetch full content to validate structure
                     req_get = urllib.request.Request(manifest_url)
-                    req_get.add_header('User-Agent', 'Telar/0.3.1-beta (IIIF validator)')
+                    req_get.add_header('User-Agent', 'Telar/0.3.3-beta (IIIF validator)')
 
                     with urllib.request.urlopen(req_get, timeout=10, context=ssl_context) as resp:
                         try:
@@ -377,7 +475,25 @@ def process_objects(df):
 
         # Warn if object has neither external manifest nor local image
         if not has_local_image:
-            error_msg = f"the image file for the object ID you specified ({object_id}) in your configuration CSV or Google Sheet was not found in components/images/objects/"
+            # Check for similar filenames (near-matches)
+            similar_files = _find_similar_image_filenames(object_id, Path('components/images/objects'))
+
+            if similar_files:
+                # Found near-matches - provide helpful suggestion
+                if len(similar_files) == 1:
+                    similar_file = similar_files[0]
+                    file_ext = Path(similar_file).suffix
+                    error_msg = f"No image file found for object_id '{object_id}', but found similar file '{similar_file}'. If this is the image you meant to use, either: (1) rename the file to {object_id}{file_ext}, or (2) update the object_id in the CSV to match the filename (without extension)."
+                    df.at[idx, 'object_warning_short'] = "Image filename mismatch"
+                else:
+                    file_list = "', '".join(similar_files)
+                    error_msg = f"No image file found for object_id '{object_id}', but found multiple similar files: '{file_list}'. If one of these is the image you meant to use, either rename it to {object_id}.* or update the object_id in the CSV to match."
+                    df.at[idx, 'object_warning_short'] = "Ambiguous image match"
+            else:
+                # No similar files found - provide basic error message
+                error_msg = f"No image source found for object '{object_id}'. Add either: (1) an IIIF manifest URL in the iiif_manifest column, or (2) an image file to components/images/objects/{object_id}.jpg"
+                df.at[idx, 'object_warning_short'] = "Missing image source"
+
             df.at[idx, 'object_warning'] = error_msg
             msg = f"Object {object_id} has no IIIF manifest or local image file"
             print(f"  [WARN] {msg}")
