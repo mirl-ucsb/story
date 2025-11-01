@@ -65,7 +65,7 @@ title: Upgrade Summary
 
 Please complete these after merging:
 
-1. Update GitHub Actions workflow file (.github/workflows/build.yml) - Replace with latest version from https://github.com/UCSB-AMPLab/telar/blob/main/.github/workflows/build.yml to remove deprecated cron schedule ([guide](https://ampl.clair.ucsb.edu/telar-docs/docs/2-workflows/upgrading/))
+~~1. Update GitHub Actions workflow file (.github/workflows/build.yml) - Replace with latest version from https://github.com/UCSB-AMPLab/telar/blob/main/.github/workflows/build.yml to remove deprecated cron schedule ([guide](https://ampl.clair.ucsb.edu/telar-docs/docs/2-workflows/upgrading/))~~ (done!)
 2. (Optional) Customize index.md content to personalize your site ([guide](https://ampl.clair.ucsb.edu/telar-docs/docs/6-customization/3-home-page/))
 
 ## Resources
