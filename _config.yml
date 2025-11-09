@@ -11,6 +11,9 @@ email: mirl@arthistory.ucsb.edu
 telar_theme: neogranadina
 logo: ''
 telar_language: en
+story_interface:
+  show_story_steps: true
+  include_demo_content: false
 google_sheets:
   enabled: true
   shared_url: https://docs.google.com/spreadsheets/d/1jsL_FovT5JCsTBk7Qz_iSJNsDuY5wt-h6o1lAfbJ1D8/edit
@@ -56,7 +59,7 @@ defaults:
 future: true
 show_drafts: false
 telar:
-  version: 0.3.4-beta
+  version: 0.4.0-beta
   release_date: $(date +%Y-%m-%d)
 plugins:
 - jekyll-seo-tag
