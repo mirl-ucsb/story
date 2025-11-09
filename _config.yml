@@ -11,6 +11,8 @@ email: mirl@arthistory.ucsb.edu
 telar_theme: neogranadina
 logo: ''
 telar_language: en
+
+# Story Interface Settings
 story_interface:
   show_story_steps: true
   include_demo_content: false
@@ -18,6 +20,17 @@ google_sheets:
   enabled: true
   shared_url: https://docs.google.com/spreadsheets/d/1jsL_FovT5JCsTBk7Qz_iSJNsDuY5wt-h6o1lAfbJ1D8/edit
   published_url: https://docs.google.com/spreadsheets/d/e/2PACX-1vTodWYk4eyiNgqnP3s499aY-AhsLoSyAVbDpX7gCNTnOHVRqOt-8TKOOL50rU8nQUHq-vj0C7JucEqC/pubhtml
+
+
+#
+#
+#
+# PLEASE DO NOT EDIT BELOW THIS LINE UNLESS YOU KNOW WHAT YOU ARE DOING
+#
+#
+#
+
+# Collections
 collections:
   stories:
     output: true
@@ -28,7 +41,11 @@ collections:
   glossary:
     output: true
     permalink: /glossary/:name/
+
+# Collections Directory (a folder where Jekyll and the Telar scripts will put all auto-generated object and story working files)
 collections_dir: _jekyll-files
+
+# Build Settings
 markdown: kramdown
 permalink: pretty
 exclude:
@@ -40,6 +57,8 @@ exclude:
 - README.md
 - docs/
 - scripts/
+
+# Defaults
 defaults:
 - scope:
     path: ''
@@ -56,13 +75,21 @@ defaults:
     type: glossary
   values:
     layout: glossary
+
+# Tell Jekyll not to expect dates for these collections
 future: true
 show_drafts: false
+
+# Telar Settings (version information)
 telar:
-  version: 0.4.0-beta
-  release_date: $(date +%Y-%m-%d)
+  version: "0.4.1-beta"
+  release_date: "2025-11-09"
+
+# Plugins
 plugins:
 - jekyll-seo-tag
+
+# WEBrick server configuration for development (enables CORS for IIIF)
 webrick:
   headers:
     Access-Control-Allow-Origin: '*'

@@ -4,83 +4,56 @@ title: Upgrade Summary
 ---
 
 ## Upgrade Summary
-- **From:** 0.3.4-beta
-- **To:** 0.4.0-beta
+- **From:** 0.4.0-beta
+- **To:** 0.4.1-beta
 - **Date:** 2025-11-09
-- **Automated changes:** 38
-- **Manual steps:** 6
+- **Automated changes:** 19
+- **Manual steps:** 4
 
 ## Automated Changes Applied
 
-### Configuration (2 files)
+### Configuration (1 file)
 
-- [x] Added Google Sheets integration comments to _config.yml
-- [x] Added story_interface configuration section to _config.yml
+- [x] Restored WEBrick configuration comment
 
-### Layouts (8 files)
+### Layouts (4 files)
 
-- [x] Updated story layout (multilingual, widgets)
-- [x] Updated object layout (multilingual)
-- [x] Updated objects index layout (multilingual)
-- [x] Updated default layout (multilingual)
-- [x] Updated glossary layout (multilingual)
-- [x] Updated glossary index layout (multilingual)
-- [x] Updated page layout
-- [x] Updated index layout (multilingual)
+- [x] Updated index layout (site description link styling)
+- [x] Updated object layout (coordinate picker buttons)
+- [x] Updated story layout (mobile responsive features restored)
+- [x] Updated telar styles (mobile responsive features, gallery layout)
 
-### Includes (5 files)
+### Scripts (1 file)
 
-- [x] Updated story-step include (multilingual)
-- [x] Updated panels include (widgets support)
-- [x] Updated viewer include
-- [x] Updated header include (multilingual)
-- [x] Updated footer include (multilingual, theme attribution)
+- [x] Updated story JavaScript (mobile navigation, preloading, transitions)
 
-### Styles (1 file)
+### Documentation (1 file)
 
-- [x] Updated telar styles (widgets, mobile responsive, site description links)
+- [x] Updated README (supporter acknowledgments)
 
-### Scripts (4 files)
+### Other (12 files)
 
-- [x] Updated story JavaScript
-- [x] Updated telar JavaScript (glossary auto-linking)
-- [x] Added widgets JavaScript (carousel, tabs, accordion)
-- [x] Updated objects.json endpoint
-
-### Documentation (2 files)
-
-- [x] Updated README
-- [x] Updated Google Sheets integration docs
-
-### Other (16 files)
-
-- [x] Created _data/languages directory
-- [x] Added English language file (_data/languages/en.yml)
-- [x] Added Spanish language file (_data/languages/es.yml)
-- [x] Updated IIIF URL warning (multilingual)
-- [x] Added accordion widget template
-- [x] Added carousel widget template
-- [x] Added tabs widget template
-- [x] Updated CSV processor (IIIF metadata extraction)
-- [x] Updated collection generator (widgets, glossary)
-- [x] Updated IIIF tile generator
-- [x] Updated Python requirements
-- [x] Updated Austin theme (creator attribution)
-- [x] Updated Neogranadina theme (creator attribution)
-- [x] Updated Paisajes theme (creator attribution)
-- [x] Updated Santa Barbara theme (creator attribution)
-- [x] Added upgrade notice to index.md
+- [x] Restored '# Story Interface Settings' header comment
+- [x] Restored 'PLEASE DO NOT EDIT BELOW THIS LINE' warning
+- [x] Restored '# Collections' header comment
+- [x] Restored 'Collections Directory' comment
+- [x] Restored '# Build Settings' header comment
+- [x] Restored '# Defaults' header comment
+- [x] Restored Jekyll dates comment
+- [x] Restored 'Telar Settings' comment
+- [x] Restored '# Plugins' header comment
+- [x] Updated English language file with coordinate picker strings
+- [x] Updated Spanish language file with coordinate picker strings
+- [x] Updated CHANGELOG
 
 ## Manual Steps Required
 
 Please complete these after merging:
 
-1. Review multilingual configuration in _config.yml (telar_language: "en" or "es") ([guide](https://ampl.clair.ucsb.edu/telar-docs/multilingual-setup))
-2. Optionally add widgets to your stories (carousel, tabs, accordion) ([guide](https://ampl.clair.ucsb.edu/telar-docs/widgets))
-3. Optionally create glossary terms and add [[term]] links to your content ([guide](https://ampl.clair.ucsb.edu/telar-docs/glossary))
-4. Test IIIF metadata auto-population by leaving object fields blank in CSV ([guide](https://ampl.clair.ucsb.edu/telar-docs/iiif-metadata))
-5. Add theme creator attribution to your theme YAML file (optional) ([guide](https://ampl.clair.ucsb.edu/telar-docs/themes#creator-attribution))
-6. Run "bundle exec jekyll build" to test your upgraded site
+1. Update your upgrade workflow file (one-time fix to prevent config comment deletion): (1) Go to https://raw.githubusercontent.com/UCSB-AMPLab/telar/main/.github/workflows/upgrade.yml (2) Select all (Ctrl/Cmd+A) and copy (3) In your repository, navigate to .github/workflows/upgrade.yml (4) Click the pencil icon to edit (5) Select all existing content and delete it (6) Paste the new content (7) Scroll to bottom and click "Commit changes". This fixes a bug that was stripping documentation comments from your _config.yml file during upgrades. ([guide](https://raw.githubusercontent.com/UCSB-AMPLab/telar/main/.github/workflows/upgrade.yml))
+2. Run "bundle exec jekyll build" to test your upgraded site
+3. Test mobile responsive features on small screens (optional)
+4. Try the new coordinate picker buttons in object pages (optional)
 
 ## Resources
 
