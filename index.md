@@ -7,7 +7,5 @@ objects_heading: "See the objects behind the stories"
 objects_intro: "Browse {count} objects featured in the stories."
 ---
 
-{% include upgrade-alert.html %}
-
 
 
