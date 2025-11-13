@@ -8,10 +8,6 @@ permalink: /about/
 
 Telar (Spanish for 'loom') is a static site generator built on Jekyll that weaves together IIIF images, text, and layered contextual information into interactive digital narrative exhibitions. Telar uses the International Image Interoperability Framework (IIIF) to serve high-resolution images that can be zoomed, panned, and explored in detail. The framework combines these images with narrative text and layered contextual panels to create immersive storytelling experiences.
 
-{: .alert .alert-info}
-> **Customize This Page**
->
-> You can edit this about page by modifying the `pages/about.md` file in your repository. Add your own project description, credits, and acknowledgments to personalize your site.
 
 ## Credits
 
