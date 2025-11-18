@@ -8,4 +8,4 @@ title: Discerning cords
 
 **Clusters**: Cord clusters are recognized based on gaps between cords on the primary cord.
 
-![](https://mirl-ucsb.github.io/story/components/images/objects/image7.jpg)
+![](https://mirl-ucsb.github.io/story/components/images/image7.jpg)
