@@ -7,3 +7,4 @@ The khipu was collected by Dr. Thomas Harper Goodspeed, a botanist at UC Berkele
 On these visits, Goodspeed worked with Peruvian scientists…
 
 ![](https://mirl-ucsb.github.io/story/components/images/image15.jpg)
+
