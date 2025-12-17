@@ -1,6 +1,6 @@
 ---
 layout: objects-index
-title: Objects in the Stories
+title: Visuals in the Stories
 permalink: /objects/
 ---
-Browse {{ site.objects.size }} objects featured in the stories.
+Browse {{ site.objects.size }} images featured in the stories.
