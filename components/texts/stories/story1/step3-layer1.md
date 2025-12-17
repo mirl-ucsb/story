@@ -1,5 +1,5 @@
 ---
-title: Discerning cords
+title: Understanding cords
 ---
 
 **Primary cord**: The primary cord contains minimal knots, aside from the kayte knot. Hanging from the primary cords are pendant cords, which can be "read" by counting the knots on each cord. Reading from left to right, this knot indicates the "beginning” of the khipu, and might also tell us something about the subject matter recorded by the khipu. 
