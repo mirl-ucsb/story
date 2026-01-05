@@ -2,22 +2,23 @@
 title: Summary and thank you
 ---
 
-Avalon Labs
+[Avalon Labs](https://www.avalonlabs.art)
 
-AMPL
+Melissa Bator, UCSB Office of Research
 
-MIRL
+[Neogranadina](https://neogranadina.org/en/)
 
-AGI seed funding
+[UC Irvine W. M. Keck Carbon Cycle Accelerator Mass Spectrometer Facility](https://sites.ps.uci.edu/kccams/)
 
-Melissa Bator, Office of Research
+[UCSB Archives, Memory & Preservation Lab](https://ampl.clair.ucsb.edu)
 
-CLAIR
+[UCSB Area Global Initiative](https://agi.ucsb.edu)
 
-UC Irvine
-https://sites.ps.uci.edu/kccams/
+[UCSB Center for Latin American and Iberian Research](https://clair.ucsb.edu)
 
-UCSB Paleoecology and AMS Radiocarbon Research Facility
+[UCSB Material / Image Research Lab](https://mirl.arthistory.ucsb.edu)
 
-Neogranadina
+[UCSB Paleoecology and AMS Radiocarbon Research Facility
+](https://www.anth.ucsb.edu/services-resources)
+
 
