@@ -2,15 +2,14 @@
 title: Khipu Features, knots & counting
 ---
 
-The attachment and organization of the pendant cords of the khipu on the primary, or main cord, is intentional and organized. 20th and 21st century oral histories from Andean highland community members indicate how. These accounts tell us that the different clusters of knots and the variation of colored cords is a means to record the contributions of specific allyu, or communities in a certain area. There is also likely significance of the different colors of cordage, including the multi-colored, or mottled cords. Watch the videos below to learn more about different knot types on khipu and how they are created.
+All three knot types are tied by wrapping loops around a finger. Single knots are created by looping a cord around the index finger, passing the running end of the cord through the loop, and then pulling the loop tight after it’s been removed from the finger. Long knots are made in a very similar fashion. The key difference is that multiple loops would be wrapped around the finger in the first step, rather than only a single loop. The number of loops corresponds to the numerical value of the long knot. The figure eight knot once again begins with a loop around the index finger, but this time, the second loop is created by crossing the running end back over the first loop instead of wrapping it beside the first loop as would be done in a long knot. When the running end is passed through the first loop again, the two loops form a figure eight. 
+
 
 
 <iframe width="560" height="315" src="https://www.youtube.com/embed/unkVyxbuYKw?si=eqg1mUn62lD4QWk1" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
 <iframe width="560" height="315" src="https://www.youtube.com/embed/dkpAY-wmjoc?si=G6E3NwbaQ41dCSCj" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
-
-All three knot types are tied by wrapping loops around a finger. Single knots are created by looping a cord around the index finger, passing the running end of the cord through the loop, and then pulling the loop tight after it’s been removed from the finger. Long knots are made in a very similar fashion. The key difference is that multiple loops would be wrapped around the finger in the first step, rather than only a single loop. The number of loops corresponds to the numerical value of the long knot. The figure eight knot once again begins with a loop around the index finger, but this time, the second loop is created by crossing the running end back over the first loop instead of wrapping it beside the first loop as would be done in a long knot. When the running end is passed through the first loop again, the two loops form a figure eight. 
 
 ![](https://mirl-ucsb.github.io/story/components/images/image8.jpg)
 
