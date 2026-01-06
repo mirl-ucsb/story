@@ -8,7 +8,7 @@ Melissa Bator, UCSB Office of Research
 
 [Neogranadina](https://neogranadina.org/en/)
 
-[UC Irvine W. M. Keck Carbon Cycle Accelerator Mass Spectrometer Facility](https://sites.ps.uci.edu/kccams/)
+[UC Irvine KCCAMS W. M. Keck Carbon Cycle Accelerator Mass Spectrometer Facility](https://sites.ps.uci.edu/kccams/)
 
 [UCSB Archives, Memory & Preservation Lab](https://ampl.clair.ucsb.edu)
 
@@ -21,4 +21,4 @@ Melissa Bator, UCSB Office of Research
 [UCSB Paleoecology and AMS Radiocarbon Research Facility
 ](https://www.anth.ucsb.edu/services-resources)
 
-
+UCSB Office of the Vice Chancellor for Research
