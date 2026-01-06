@@ -14,3 +14,4 @@ title: Understanding cords and their materiality
 ![](https://mirl-ucsb.github.io/story/components/images/image18.jpg)
 
 
+Rolled-up seriated khipu, Inka, 1450–1534 CE. Collection of Dumbarton Oaks, Washington D.C. PC.WBC.2016.070.
