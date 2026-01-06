@@ -1,5 +1,5 @@
 ---
-title: Summary and thank you
+title: Acknowledgements
 ---
 
 [UCSB Art, Design & Architecture Museum](https://www.museum.ucsb.edu)
