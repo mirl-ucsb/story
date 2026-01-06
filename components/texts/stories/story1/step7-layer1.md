@@ -4,6 +4,8 @@ title: Summary and thank you
 
 [Avalon Labs](https://www.avalonlabs.art)
 
+[The Khipu Field Guide](https://www.khipufieldguide.com)
+
 Melissa Bator, UCSB Office of Research
 
 [Neogranadina](https://neogranadina.org/en/)
@@ -15,6 +17,8 @@ Melissa Bator, UCSB Office of Research
 [UCSB Area Global Initiative](https://agi.ucsb.edu)
 
 [UCSB Center for Latin American and Iberian Research](https://clair.ucsb.edu)
+
+[UCSB Division of Humanities and Fine Arts](https://www.hfa.ucsb.edu)
 
 [UCSB Material / Image Research Lab](https://mirl.arthistory.ucsb.edu)
 
