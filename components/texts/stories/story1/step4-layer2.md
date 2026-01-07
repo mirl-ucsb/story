@@ -3,4 +3,4 @@ title: Interpreting the Khipu Cont'd
 ---
 
 
-**annotated photo with counts from cluster 10**
+![](https://mirl-ucsb.github.io/story/components/images/image19.jpg)
