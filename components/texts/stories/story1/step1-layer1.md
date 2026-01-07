@@ -8,3 +8,5 @@ There are major gaps in modern knowledge about how khipus operated. The Spanish,
 
 
 ![](https://mirl-ucsb.github.io/story/components/images/image2.jpg)
+
+Felipe Guaman Poma de Ayala, drawing of khipukamayuq, *El primer nueva corónica y buen gobierno*,1615-1616. Royal Library, Copenhagen, Denmark.
