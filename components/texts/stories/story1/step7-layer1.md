@@ -24,9 +24,11 @@ Ayala Campos, J., Mahan, S., Wilson, B., Antúnez de Mayolo, K., Jakes, K., Ste
 
 Burr, Elizabeth. “Dye Analysis of Archaeological Peruvian Textiles Using Surface Enhanced Raman Spectroscopy (SERS)”. Master’s Thesis, University of California, Los Angeles, 2016.
 
-Curatola, Marco, and José Carlos de la Puente Luna. *El Quipu Colonial: Estudios y Materiales*. Pontificia Universidad Católica del Perú, 2013.
-
 Chirinos Rivera, Andrés. *Quipus del Tahuantinsuyo: Curacas, Incas y su saber matemático en el siglo XVI*. Lima, Peru: Editorial Commentarios, 2010.
+
+Clindaniel, Jon. *Toward a Grammar of the Inka Khipu: Investigating the Production of Non-Numerical Signs*. PhD Dissertation, Harvard University, Massachusetts, 2019. [https://www.proquest.com/dissertations-theses/toward-grammar-inka-khipu-investigating/docview/2459432764/se-2](https://www.proquest.com/dissertations-theses/toward-grammar-inka-khipu-investigating/docview/2459432764/se-2).
+
+Curatola, Marco, and José Carlos de la Puente Luna. *El Quipu Colonial: Estudios y Materiales*. Pontificia Universidad Católica del Perú, 2013.
 
 Delaney, John K., Paola Ricciardi, Lisha Deming Glinsman, Michelle Facini, Mathieu Thoury, Michael Palmer, and E. René de la Rie. “Use of Imaging Spectroscopy, Fiber Optic Reflectance Spectroscopy, and X-Ray Fluorescence to Map and Identify Pigments in Illuminated Manuscripts.” *Studies in Conservation* 59, no. 2 (2014): 91–101. [http://www.jstor.org/stable/42751851](http://www.jstor.org/stable/42751851). 
 
