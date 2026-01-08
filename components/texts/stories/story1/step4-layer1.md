@@ -4,7 +4,7 @@ title: Interpreting the Khipu
 
 Analysis of the khipu at UCSB identified **97 pendant cords** and **37 subsidiary cords** in **nine clusters**. These nine clusters of cords likely recorded census and tribute information related to different communities, which is suggested by the patterning on the cords within each cluster.
 
-Looking closely, some of the clusters contain many knots and knot types, while the cords in other clusters have fewer knots, or none at all. This speaks to the continual use and re-use of khipu to record and update information.
+Looking closely, some of the clusters contain many knots and knot types, while the cords in other clusters have fewer knots, or none at all. Interestingly, each of cluster's cords are the same color.  
 
 ![](https://mirl-ucsb.github.io/story/components/images/image17.jpg)
 
