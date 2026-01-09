@@ -40,9 +40,9 @@ Howell, David. “The Potential of Hyperspectral Imaging for Researching Colour 
 
 Hyland, Sabine. “How Khipus Indicated Labour Contributions in an Andean Village: An Explanation of Colour Banding, Seriation and Ethnocategories.” *Journal of Material Culture* 21, no. 4 (2016): 490–509. [https://doi.org/10.1177/1359183516662677](https://doi.org/10.1177/1359183516662677).
 
-Hyland, Sabine, et al. "Stable isotope evidence for the participation of commoners in Inka khipu production." *Science Advances* 11, eadv1950 (2025). doi:[10.1126/sciadv.adv1950](https://doi.org/10.1126/sciadv.adv1950)
-
 Hyland, Sabine. “Knot Anomalies on Inka Khipus: Revising Locke’s Knot Typology.” *IX Jornadas Internacionales de Textiles Precolombinos y Amerindianos / 9th International Conference on Pre- Columbian and Amerindian Textiles*, Museo delle Culture, Milan, 2022. (Lincoln, Nebraska: Zea Books, 2024), 162-180.	
+
+Hyland, Sabine, et al. "Stable isotope evidence for the participation of commoners in Inka khipu production." *Science Advances* 11, eadv1950 (2025). doi:[10.1126/sciadv.adv1950](https://doi.org/10.1126/sciadv.adv1950)
 
 Jakes, Kathryn A. “Infrared Examination of Fiber and Particulate Residues from Archaeological Textiles.” In *Archaeological Chemistry: Analytical Techniques and Archaeological Interpretation*, Vol. 968, 44-77.  Washington, DC: American Chemical Society, 2007.
 
