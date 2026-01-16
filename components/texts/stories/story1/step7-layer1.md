@@ -2,7 +2,7 @@
 title: Readings
 ---
 
-### Websites, Databases Online Exhibits 
+### Websites, Databases, Online Exhibits 
 
 “[Written in Knots: Undeciphered Accounts of Andean Life](https://www.doaks.org/resources/online-exhibits/written-in-knots)”. April 2 - August 18, 2019, Dumbarton Oaks Museum 
 
