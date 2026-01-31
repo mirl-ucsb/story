@@ -53,6 +53,11 @@ _demo_content/
 iiif/objects/
 
 # Python
+.pytest_cache/
 __pycache__/
 *.py[cod]
 *$py.class
+
+# JavaScript build artifacts
+assets/js/telar-story.js
+assets/js/telar-story.js.map
