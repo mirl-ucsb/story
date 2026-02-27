@@ -61,3 +61,6 @@ __pycache__/
 # JavaScript build artifacts
 assets/js/telar-story.js
 assets/js/telar-story.js.map
+
+# Generated data
+search-data.json
