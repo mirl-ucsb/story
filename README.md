@@ -1,6 +1,6 @@
 # Telar
 
-![Version](https://img.shields.io/badge/version-0.7.0--beta-orange) ![License](https://img.shields.io/badge/license-MIT-blue)
+![Version](https://img.shields.io/badge/version-0.8.1--beta-orange) ![License](https://img.shields.io/badge/license-MIT-blue)
 
 **[Versión en español abajo](#español)** | **[English version](#telar)**
 
@@ -12,7 +12,7 @@ A minimal-computing framework for creating layered IIIF visual narratives for di
 
 ---
 
-> **⚠️ Beta Release - v0.7.0-beta**
+> **⚠️ Beta Release - v0.8.1-beta**
 > This is a beta release for testing and feedback. For detailed documentation, visit **[telar.org/docs](https://telar.org/docs)**.
 
 > **Warning:** If upgrading from v0.3.4 or earlier, see the [Upgrading Telar Guide](https://telar.org/docs/2-workflows/3-upgrading/) for instructions.
@@ -21,7 +21,7 @@ A minimal-computing framework for creating layered IIIF visual narratives for di
 
 Telar (Spanish for "loom") is a static site generator built on Jekyll that weaves together IIIF images, narrative text, and layered contextual information into interactive visual narrative exhibitions. It follows minimal computing principles: plain text authoring, static generation, and sustainable hosting.
 
-Telar is developed by Adelaida Ávila, Juan Cobo Betancourt, Santiago Muñoz, and students and scholars at the [UCSB Archives, Memory, and Preservation Lab](https://ampl.clair.ucsb.edu), the UT Archives, Mapping, and Preservation Lab, and [Neogranadina](https://neogranadina.org).
+Telar is developed by Adelaida Ávila, Juan Cobo Betancourt, Natalie Cobo, Santiago Muñoz, and students and scholars at the [UCSB Archives, Memory, and Preservation Lab](https://ampl.clair.ucsb.edu), the UT Archives, Mapping, and Preservation Lab, and [Neogranadina](https://neogranadina.org).
 
 We gratefully acknowledge the support of the [Caribbean Digital Scholarship Collective](https://cdscollective.org), the [Center for Innovative Teaching, Research, and Learning (CITRAL)](https://citral.ucsb.edu/home) at the University of California, Santa Barbara, the [UCSB Library](https://library.ucsb.edu), the [Routes of Enslavement in the Americas University of California MRPI](https://www.humanities.uci.edu/routes-enslavement-americas), and the [Department of History of The University of Texas at Austin](https://liberalarts.utexas.edu/history/).
 
@@ -93,7 +93,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Credits
 
-Telar is developed by Adelaida Ávila, Juan Cobo Betancourt, Santiago Muñoz, and students and scholars at the [UCSB Archives, Memory, and Preservation Lab](https://ampl.clair.ucsb.edu), the UT Archives, Mapping, and Preservation Lab, and [Neogranadina](https://neogranadina.org).
+Telar is developed by Adelaida Ávila, Juan Cobo Betancourt, Natalie Cobo, Santiago Muñoz, and students and scholars at the [UCSB Archives, Memory, and Preservation Lab](https://ampl.clair.ucsb.edu), the UT Archives, Mapping, and Preservation Lab, and [Neogranadina](https://neogranadina.org).
 
 Telar is built with:
 - [Jekyll](https://jekyllrb.com/) - Static site generator
@@ -116,7 +116,7 @@ It is based on [Paisajes Coloniales](https://paisajescoloniales.com/), and inspi
 
 # Español
 
-![Versión](https://img.shields.io/badge/versi%C3%B3n-0.7.0--beta-orange) ![Licencia](https://img.shields.io/badge/licencia-MIT-blue)
+![Versión](https://img.shields.io/badge/versi%C3%B3n-0.8.1--beta-orange) ![Licencia](https://img.shields.io/badge/licencia-MIT-blue)
 
 **[Versión en español](#español)** | **[English version above](#telar)**
 
@@ -128,7 +128,7 @@ Un marco de computación mínima para crear narrativas visuales con capas de tex
 
 ---
 
-> **⚠️ Versión Beta - v0.7.0-beta**
+> **⚠️ Versión Beta - v0.8.1-beta**
 > Esta es una versión beta para pruebas y retroalimentación. Para documentación detallada, visita **[telar.org/guia](https://telar.org/guia)**.
 
 > **Advertencia:** Si estás actualizando desde v0.3.4 o anterior, consulta la [Guía de Actualización de Telar](https://telar.org/guia/flujos-de-trabajo/actualizacion/) para obtener instrucciones.
@@ -137,7 +137,7 @@ Un marco de computación mínima para crear narrativas visuales con capas de tex
 
 Telar es un generador de sitios estáticos construido sobre Jekyll que entreteje imágenes IIIF, texto narrativo e información contextual en capas en exhibiciones narrativas visuales interactivas. Sigue los principios de computación mínima: autoría en texto plano, generación estática y alojamiento sostenible.
 
-Telar es desarrollado por Adelaida Ávila, Juan Cobo Betancourt, Santiago Muñoz, y estudiantes e investigadores en el [UCSB Archives, Memory, and Preservation Lab](https://ampl.clair.ucsb.edu), el UT Archives, Mapping, and Preservation Lab, y [Neogranadina](https://neogranadina.org).
+Telar es desarrollado por Adelaida Ávila, Juan Cobo Betancourt, Natalie Cobo, Santiago Muñoz, y estudiantes e investigadores en el [UCSB Archives, Memory, and Preservation Lab](https://ampl.clair.ucsb.edu), el UT Archives, Mapping, and Preservation Lab, y [Neogranadina](https://neogranadina.org).
 
 Agradecemos el apoyo del [Caribbean Digital Scholarship Collective](https://cdscollective.org), el [Center for Innovative Teaching, Research, and Learning (CITRAL)](https://citral.ucsb.edu/home) de la University of California, Santa Barbara, la [UCSB Library](https://library.ucsb.edu), el [Routes of Enslavement in the Americas University of California MRPI](https://www.humanities.uci.edu/routes-enslavement-americas), y el [Department of History of The University of Texas at Austin](https://liberalarts.utexas.edu/history/).
 
@@ -209,7 +209,7 @@ Licencia MIT - consulta el archivo [LICENSE](LICENSE) para más detalles.
 
 ## Créditos
 
-Telar es desarrollado por Adelaida Ávila, Juan Cobo Betancourt, Santiago Muñoz, y estudiantes e investigadores en el [UCSB Archives, Memory, and Preservation Lab](https://ampl.clair.ucsb.edu), el UT Archives, Mapping, and Preservation Lab, y [Neogranadina](https://neogranadina.org).
+Telar es desarrollado por Adelaida Ávila, Juan Cobo Betancourt, Natalie Cobo, Santiago Muñoz, y estudiantes e investigadores en el [UCSB Archives, Memory, and Preservation Lab](https://ampl.clair.ucsb.edu), el UT Archives, Mapping, and Preservation Lab, y [Neogranadina](https://neogranadina.org).
 
 Telar está construido con:
 - [Jekyll](https://jekyllrb.com/) - Generador de sitios estáticos
