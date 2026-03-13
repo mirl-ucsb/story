@@ -6,5 +6,5 @@ The khipu was collected by Dr. Thomas Harper Goodspeed, a botanist at UC Berkele
 
 Goodspeed’s scientific work intersected with U.S. diplomatic and commercial interests; he represented the Committee on Interamerican Artistic and Cultural Relations, led by Nelson Rockefeller, and was involved in organizations promoting large-scale tobacco hybridization. While in Peru, he met archaeologists Julio Tello and Luis Valcárcel, and possibly participated in excavations, revealing his broader interest and professional networks related to the study of ancient Andean cultures.
 
-![](https://mirl-ucsb.github.io/story/components/images/image15.jpg)
+![](https://mirl-ucsb.github.io/story/telar-content/objects/image15.jpg)
 
