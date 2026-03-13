@@ -11,7 +11,7 @@ All three knot types are tied by wrapping loops around a finger. Single knots ar
 <iframe width="560" height="315" src="https://www.youtube.com/embed/dkpAY-wmjoc?si=G6E3NwbaQ41dCSCj" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
 
-![](https://mirl-ucsb.github.io/story/components/images/image8.jpg)
+![](https://mirl-ucsb.github.io/story/telar-content/objects/image8.jpg)
 
 Counting the cords on a khipu means looking at knot types as well as where the knots are placed on a cords. The upper section of a khipu cord contains only single knots, which represent values in multiples of 10. The lower section of the cord consists of figure eight and long knots. Figure eight knots denote a value of 1, and long knots denote values 2 through 9. The values in the upper and lower registers on a cord are added together to get the value of the cord as a whole. For example, this cord from the UCSB khipu can be read as having a value of 44 since it has 4 single knots in the upper register and a 4 long knot in the lower register. 
 
