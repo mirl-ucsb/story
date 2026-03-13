@@ -23,13 +23,13 @@ Spanish equivalent (e.g., `proyecto.csv`).
 `main()` drives the full build. It fetches demo content if enabled,
 checks for Christmas Tree Mode in `_config.yml`, then converts the three
 CSV types in order: project setup, objects, and story files. Story files
-are discovered dynamically — every CSV in `components/structures/` that
+are discovered dynamically — every CSV in `telar-content/spreadsheets/` that
 is not a system file (`project.csv`, `objects.csv`, or their Spanish
 equivalents) is treated as a story. After all CSVs are converted, demo
 content is loaded and merged if available. Protected stories (v0.8.0+)
 are then encrypted using the story_key from _config.yml.
 
-Version: v0.8.0-beta
+Version: v0.9.1-beta
 """
 
 import os
@@ -95,14 +95,15 @@ def csv_to_json(csv_path, json_path, process_func=None):
         # Convert to JSON
         data = df.to_dict('records')
 
-        # If dataframe has metadata (e.g., viewer warnings), prepend as first element
-        if hasattr(df, 'attrs') and 'viewer_warnings' in df.attrs:
-            viewer_warnings = df.attrs['viewer_warnings']
-            if viewer_warnings:  # Only add if there are warnings
-                metadata = {
-                    '_metadata': True,
-                    'viewer_warnings': viewer_warnings
-                }
+        # If dataframe has metadata (e.g., viewer warnings, LaTeX flag), prepend as first element
+        if hasattr(df, 'attrs') and ('viewer_warnings' in df.attrs or 'has_latex' in df.attrs):
+            metadata = {'_metadata': True}
+            viewer_warnings = df.attrs.get('viewer_warnings')
+            if viewer_warnings:
+                metadata['viewer_warnings'] = viewer_warnings
+            if df.attrs.get('has_latex'):
+                metadata['has_latex'] = True
+            if len(metadata) > 1:  # Only add if there's actual metadata beyond the flag
                 data.insert(0, metadata)
 
         # Write JSON file
@@ -121,7 +122,7 @@ def find_csv_with_fallback(base_path, spanish_name):
     Checks for English name first, then Spanish equivalent.
 
     Args:
-        base_path: Base path like 'components/structures/project'
+        base_path: Base path like 'telar-content/spreadsheets/project'
         spanish_name: Spanish filename like 'proyecto'
 
     Returns:
@@ -249,13 +250,19 @@ def main():
     data_dir = Path('_data')
     data_dir.mkdir(exist_ok=True)
 
-    structures_dir = Path('components/structures')
+    structures_dir = Path('telar-content/spreadsheets')
+    if not structures_dir.exists():
+        old_dir = Path('telar-content/structures')
+        if old_dir.exists():
+            print(f"⚠️  Found '{old_dir}' — please rename to '{structures_dir}'")
+            print(f"   Run: mv {old_dir} {structures_dir}")
+            structures_dir = old_dir
 
     print("Converting CSV files to JSON...")
     print("-" * 50)
 
     # Convert project setup (with bilingual fallback: project.csv or proyecto.csv)
-    project_path = find_csv_with_fallback('components/structures/project', 'proyecto')
+    project_path = find_csv_with_fallback('telar-content/spreadsheets/project', 'proyecto')
     csv_to_json(
         project_path,
         '_data/project.json',
@@ -263,7 +270,7 @@ def main():
     )
 
     # Convert objects (with bilingual fallback: objects.csv or objetos.csv)
-    objects_path = find_csv_with_fallback('components/structures/objects', 'objetos')
+    objects_path = find_csv_with_fallback('telar-content/spreadsheets/objects', 'objetos')
     if christmas_tree_mode:
         csv_to_json(
             objects_path,

@@ -20,9 +20,9 @@ pip install iiif Pillow pandas
 
 Telar uses a **components-based architecture** where content is separated from structure:
 
-- **`components/`** - Source of truth for all content
-  - `components/images/` - Source images for IIIF processing
-  - `components/texts/` - Markdown files with long-form content
+- **`telar-content/`** - Source of truth for all content
+  - `telar-content/objects/` - Source images and PDFs for IIIF processing
+  - `telar-content/texts/` - Markdown files with long-form content
 - **CSV files** - Structural data that references component files
   - Story structure (coordinates, objects, file references)
   - Object metadata
@@ -39,9 +39,9 @@ Generate IIIF tiles and manifests for local images.
 
 ### Basic Usage
 
-1. Add images to `images/objects/` directory:
+1. Add images to `telar-content/objects/` directory:
    ```
-   images/objects/
+   telar-content/objects/
    ├── painting-1.jpg
    ├── manuscript-2.tif
    └── map-3.png
@@ -92,14 +92,14 @@ python scripts/generate_iiif.py --base-url https://mysite.github.io/project
 
 ### How It Works
 
-1. **Tile Generation**: Creates IIIF Image API Level 0 tiles
+1. **Tile Generation**: Creates IIIF Image API 3.0 tiles using libvips (with Python `iiif` library as fallback)
    - 512x512 pixel tiles
    - Multiple zoom levels
    - Outputs `info.json` with image metadata
 
 2. **Manifest Creation**: Wraps tiles in IIIF Presentation API v3 manifest
    - Adds metadata from `_data/objects.json`
-   - Compatible with UniversalViewer
+   - Compatible with Tify
    - Outputs `manifest.json`
 
 3. **Object Linking**: Reference in your CSV/JSON:
@@ -119,7 +119,7 @@ python scripts/generate_iiif.py --base-url https://mysite.github.io/project
 - Object ID is derived from filename (without extension)
 - Existing tiles are regenerated (deleted and recreated)
 - Large images may take several minutes to process
-- Default base URL is `http://localhost:4000/telar` (for local testing)
+- Default base URL is `http://localhost:4001/telar` (for local testing)
 
 ## Data Processing Scripts
 
@@ -135,7 +135,7 @@ python scripts/csv_to_json.py
 
 1. **Reads CSV files** from `_data/` directory
 2. **Detects file reference columns** (columns ending with `_file`)
-3. **Loads markdown files** from `components/texts/`
+3. **Loads markdown files** from `telar-content/texts/`
 4. **Parses frontmatter** to extract title
 5. **Embeds content** into JSON output
 
@@ -148,7 +148,7 @@ step,question,answer,layer1_file,layer2_file
 ```
 
 The script will:
-- Look for `components/texts/stories/story1/step1-layer1.md`
+- Look for `telar-content/texts/stories/story1/step1-layer1.md`
 - Extract `title` from frontmatter
 - Extract body content
 - Create `layer1_title` and `layer1_text` columns in JSON
@@ -165,7 +165,7 @@ python scripts/generate_collections.py
 
 - **Objects**: Reads `_data/objects.json` and generates files in `_jekyll-files/_objects/`
 - **Stories**: Reads `_data/project.csv` and generates files in `_jekyll-files/_stories/`
-- **Glossary**: Reads markdown files directly from `components/texts/glossary/` and generates files in `_jekyll-files/_glossary/`
+- **Glossary**: Reads markdown files directly from `telar-content/texts/glossary/` and generates files in `_jekyll-files/_glossary/`
 
 **Glossary metadata (in component files):**
 ```markdown
@@ -183,12 +183,24 @@ The Colonial Period in the Americas began with...
 - `title` - Term name
 - `related_terms` - Comma-separated list (optional)
 
+## JavaScript Bundling
+
+The story viewer JavaScript is developed as modular files in `assets/js/telar-story/` and bundled into a single file for production. After modifying any file in that directory, rebuild the bundle:
+
+```bash
+npx esbuild assets/js/telar-story/main.js --bundle --outfile=assets/js/telar-story.js --format=iife --sourcemap
+```
+
+This produces `assets/js/telar-story.js` (the bundled file Jekyll serves) and a source map. Both files should be committed.
+
+**Note:** If you skip this step after editing the modular sources, the site will serve the old bundle and your changes will not take effect.
+
 ## Workflow
 
 Complete data processing workflow:
 
 ```bash
-# 1. Edit content in components/texts/
+# 1. Edit content in telar-content/texts/
 # 2. Update structure in CSV files (_data/*.csv)
 # 3. Convert CSV to JSON (embeds markdown content)
 python scripts/csv_to_json.py
@@ -199,7 +211,10 @@ python scripts/generate_collections.py
 # 5. Generate IIIF tiles for any new images
 python scripts/generate_iiif.py
 
-# 6. Build Jekyll site
+# 6. Bundle JavaScript (only if you modified files in assets/js/telar-story/)
+npx esbuild assets/js/telar-story/main.js --bundle --outfile=assets/js/telar-story.js --format=iife --sourcemap
+
+# 7. Build Jekyll site
 bundle exec jekyll build
 ```
 

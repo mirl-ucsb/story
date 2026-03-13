@@ -40,7 +40,7 @@ In Christmas Tree Mode, `process_story()` appends additional fake
 warnings covering every warning type (viewer, panel, glossary) so that
 the intro panel's error display can be visually tested.
 
-Version: v0.7.0-beta
+Version: v0.9.1-beta
 """
 
 import re
@@ -53,6 +53,7 @@ from telar.config import get_lang_string
 from telar.glossary import load_glossary_terms, process_glossary_links
 from telar.markdown import read_markdown_file, process_inline_content
 from telar.csv_utils import get_source_url
+from telar.latex import has_latex
 
 
 def process_story(df, christmas_tree=False):
@@ -90,6 +91,23 @@ def process_story(df, christmas_tree=False):
     # Remove completely empty rows
     df = df[df.astype(str).apply(lambda x: x.str.strip()).ne('').any(axis=1)]
 
+    # Validate and normalize page column
+    if 'page' in df.columns:
+        for idx, row in df.iterrows():
+            page_val = row.get('page', '')
+            step_num = row.get('step', 'unknown')
+            if pd.notna(page_val) and str(page_val).strip():
+                try:
+                    page_int = int(float(str(page_val).strip()))
+                    if page_int < 1:
+                        raise ValueError
+                    df.at[idx, 'page'] = page_int
+                except (ValueError, TypeError):
+                    msg = f"Story step {step_num}: invalid page value '{page_val}' (must be positive integer)"
+                    print(f"  [WARN] {msg}")
+                    warnings.append(msg)
+                    df.at[idx, 'page'] = ''
+
     # Load objects data for validation
     objects_data = {}
     objects_json_path = Path('_data/objects.json')
@@ -111,6 +129,9 @@ def process_story(df, christmas_tree=False):
         # Build case-insensitive lookup map for objects
         objects_lower_map = {k.lower(): k for k in objects_data.keys()}
 
+        # Extensions to strip from object references in story CSV
+        strippable_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.tif', '.tiff', '.bmp', '.svg', '.pdf']
+
         for idx, row in df.iterrows():
             object_id = str(row.get('object', '')).strip()
             step_num = row.get('step', 'unknown')
@@ -118,6 +139,15 @@ def process_story(df, christmas_tree=False):
             # Skip if no object specified
             if not object_id:
                 continue
+
+            # Strip file extensions from object references (users may type "photo.jpg" instead of "photo")
+            for ext in strippable_extensions:
+                if object_id.lower().endswith(ext):
+                    stripped_id = object_id[:-len(ext)]
+                    print(f"  [INFO] Stripped extension from story object reference: '{object_id}' -> '{stripped_id}'")
+                    object_id = stripped_id
+                    df.at[idx, 'object'] = object_id
+                    break
 
             # Check if object exists (case-insensitive)
             actual_object_id = None
@@ -144,16 +174,17 @@ def process_story(df, christmas_tree=False):
 
             # If no external IIIF manifest, check for local image file
             if not iiif_manifest:
-                # Check for local image in components/images/
-                valid_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.tif', '.tiff']
+                # Check for local image in telar-content/objects/
+                valid_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.tif', '.tiff', '.pdf'}
                 has_local_image = False
+                objects_dir = Path('telar-content/objects')
 
-                for ext in valid_extensions:
-                    local_image_path = Path(f'components/images/{actual_object_id}{ext}')
-                    if local_image_path.exists():
-                        has_local_image = True
-                        print(f"  [INFO] Object {actual_object_id} uses local image: {local_image_path}")
-                        break
+                if objects_dir.exists():
+                    for f in objects_dir.iterdir():
+                        if f.stem == actual_object_id and f.suffix.lower() in valid_extensions:
+                            has_local_image = True
+                            print(f"  [INFO] Object {actual_object_id} uses local image: {f}")
+                            break
 
                 # Only warn if object has neither external manifest nor local image
                 if not has_local_image:
@@ -281,6 +312,20 @@ def process_story(df, christmas_tree=False):
 
     # Store warnings in dataframe as metadata (will be added to JSON)
     df.attrs['viewer_warnings'] = all_warnings
+
+    # Check for LaTeX content across all steps
+    latex_detected = False
+    for idx, row in df.iterrows():
+        for col in df.columns:
+            if col.endswith('_text'):
+                text = str(row.get(col, ''))
+                if text and has_latex(text):
+                    latex_detected = True
+                    break
+        if latex_detected:
+            break
+
+    df.attrs['has_latex'] = latex_detected
 
     # Christmas Tree Mode: Inject fake warnings for testing
     if christmas_tree:

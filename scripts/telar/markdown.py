@@ -14,7 +14,7 @@ remains to HTML.
 path with case-insensitive fallback (using `resolve_path_case_insensitive`
 from the images module), parses optional YAML frontmatter to extract a
 title, and then runs the content through the widget/image/markdown
-pipeline. Files are expected under `components/texts/`.
+pipeline. Files are expected under `telar-content/texts/`.
 
 `process_inline_content()` handles text written directly in spreadsheet
 cells. It normalises line endings (spreadsheets may use `\\r\\n` or
@@ -24,12 +24,13 @@ as horizontal rules), and then runs the same pipeline. The markdown
 library's `nl2br` extension is enabled so that single line breaks in
 the spreadsheet cell produce `<br>` tags in the output.
 
-Version: v0.7.0-beta
+Version: v0.9.1-beta
 """
 
 import re
 import markdown
 from telar.images import process_images, resolve_path_case_insensitive
+from telar.latex import protect_latex, restore_latex
 from telar.widgets import process_widgets
 
 
@@ -38,16 +39,16 @@ def read_markdown_file(file_path, widget_warnings=None):
     Read a markdown file and parse frontmatter
 
     Args:
-        file_path: Path to markdown file relative to components/texts/
+        file_path: Path to markdown file relative to telar-content/texts/
         widget_warnings: Optional list to collect widget warnings
 
     Returns:
         dict with 'title' and 'content' keys, or None if file doesn't exist
     """
-    full_path = resolve_path_case_insensitive('components/texts', file_path)
+    full_path = resolve_path_case_insensitive('telar-content/texts', file_path)
 
     if full_path is None:
-        print(f"Warning: Markdown file not found: components/texts/{file_path}")
+        print(f"Warning: Markdown file not found: telar-content/texts/{file_path}")
         return None
 
     # Initialize widget warnings list if not provided
@@ -76,8 +77,14 @@ def read_markdown_file(file_path, widget_warnings=None):
             # Process images (sizes and captions) BEFORE markdown conversion
             body = process_images(body)
 
+            # Protect LaTeX blocks from markdown processing
+            body, latex_replacements = protect_latex(body)
+
             # Convert markdown to HTML
             html_content = markdown.markdown(body, extensions=['extra', 'nl2br'])
+
+            # Restore LaTeX blocks
+            html_content = restore_latex(html_content, latex_replacements)
 
             return {
                 'title': title,
@@ -93,8 +100,14 @@ def read_markdown_file(file_path, widget_warnings=None):
             # Process images (sizes and captions) BEFORE markdown conversion
             content_body = process_images(content_body)
 
+            # Protect LaTeX blocks from markdown processing
+            content_body, latex_replacements = protect_latex(content_body)
+
             # Convert markdown to HTML
             html_content = markdown.markdown(content_body, extensions=['extra', 'nl2br'])
+
+            # Restore LaTeX blocks
+            html_content = restore_latex(html_content, latex_replacements)
             return {
                 'title': '',
                 'content': html_content
@@ -150,8 +163,14 @@ def process_inline_content(text, widget_warnings=None):
     # Process images (sizes and captions) BEFORE markdown conversion
     content = process_images(content)
 
+    # Protect LaTeX blocks from markdown processing
+    content, latex_replacements = protect_latex(content)
+
     # Convert markdown to HTML (nl2br handles single line breaks)
     html_content = markdown.markdown(content, extensions=['extra', 'nl2br'])
+
+    # Restore LaTeX blocks
+    html_content = restore_latex(html_content, latex_replacements)
 
     return {
         'title': title,
