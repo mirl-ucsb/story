@@ -9,25 +9,27 @@ name: Build and Deploy Telar Site
 #   1. Set up the three runtime environments (Ruby for Jekyll, Python for the
 #      build scripts, Node.js for the JavaScript bundler)
 #   2. Fetch content from Google Sheets (if enabled in _config.yml) — this
-#      downloads the spreadsheet tabs as CSV files into components/structures/
+#      downloads the spreadsheet tabs as CSV files into telar-content/spreadsheets/
 #   3. Run csv_to_json.py to process the CSV data into the JSON files that
 #      Jekyll uses to render story pages
 #   4. Run generate_collections.py to turn the markdown texts in
-#      components/texts/ into Jekyll collection files
-#   5. Bundle the JavaScript source modules (assets/js/telar-story/) into a
+#      telar-content/texts/ into Jekyll collection files
+#   5. Run search.py to generate search-data.json with facet counts for the
+#      browse-and-search UI on the objects page
+#   6. Bundle the JavaScript source modules (assets/js/telar-story/) into a
 #      single file using esbuild
-#   6. Build the Jekyll site
-#   7. Generate IIIF deep-zoom image tiles for self-hosted exhibition objects
+#   7. Build the Jekyll site
+#   8. Generate IIIF deep-zoom image tiles for self-hosted exhibition objects
 #      (with smart caching — tiles are only regenerated when source images or
 #      objects.csv change)
-#   8. Deploy the built site to GitHub Pages
+#   9. Deploy the built site to GitHub Pages
 #
 # The IIIF tile generation includes a change-detection step that compares the
 # current commit against the previous one. If only content files changed (not
 # images or objects.csv), it restores tiles from the GitHub Actions cache
 # instead of regenerating them, which saves significant build time.
 #
-# Version: v0.7.0-beta
+# Version: v0.9.0-beta
 
 on:
   push:
@@ -50,7 +52,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -59,9 +61,12 @@ jobs:
           bundler-cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+
+      - name: Install libvips (for fast IIIF tile generation)
+        run: sudo apt-get install -y libvips-tools
 
       - name: Install Python dependencies
         run: |
@@ -69,7 +74,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
@@ -98,17 +103,21 @@ jobs:
         run: |
           python scripts/generate_collections.py
 
+      - name: Generate search data
+        run: |
+          python scripts/telar/search.py
+
       - name: Build Jekyll site
         run: |
           bundle exec jekyll build
 
       - name: Restore IIIF tiles from cache
         id: cache-iiif
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: cached-iiif/
-          # v0.5.0: Flattened image directory structure - now all images in components/images/
-          key: iiif-tiles-${{ hashFiles('components/images/**') }}
+          # v0.5.0: Flattened image directory structure - now all images in telar-content/objects/
+          key: iiif-tiles-${{ hashFiles('telar-content/objects/**') }}
 
       - name: Detect if IIIF regeneration is needed
         id: detect-changes
@@ -128,18 +137,18 @@ jobs:
               # v0.5.0: CSV-aware image monitoring - only triggers for images matching object_ids
 
               # Always regenerate if objects.csv or _config.yml changed
-              if echo "$CHANGED_FILES" | grep -qE '^components/structures/objects\.csv$|^_config\.yml$'; then
+              if echo "$CHANGED_FILES" | grep -qE '^telar-content/spreadsheets/objects\.csv$|^_config\.yml$'; then
                 echo "✓ objects.csv or _config.yml changed - IIIF regeneration needed"
                 NEEDS_IIIF="true"
               # Check if any images changed
-              elif echo "$CHANGED_FILES" | grep -q '^components/images/'; then
+              elif echo "$CHANGED_FILES" | grep -q '^telar-content/objects/'; then
                 echo "✓ Image files changed - checking if they match objects in CSV..."
 
                 # Get list of object IDs from objects.csv (skip header row)
-                OBJECT_IDS=$(tail -n +2 components/structures/objects.csv | cut -d',' -f1)
+                OBJECT_IDS=$(tail -n +2 telar-content/spreadsheets/objects.csv | cut -d',' -f1)
 
                 # Get list of changed images (extract filenames, remove path and extension)
-                CHANGED_IMAGES=$(echo "$CHANGED_FILES" | grep '^components/images/' | sed 's|.*/||' | sed 's/\.[^.]*$//')
+                CHANGED_IMAGES=$(echo "$CHANGED_FILES" | grep '^telar-content/objects/' | sed 's|.*/||' | sed 's/\.[^.]*$//')
 
                 # Check if any changed image matches an object ID
                 MATCH_FOUND="false"
@@ -177,7 +186,7 @@ jobs:
         if: steps.detect-changes.outputs.needs_iiif == 'true'
         run: |
           # v0.5.0: Check if source images directory exists (flattened structure)
-          if [ -d "components/images" ]; then
+          if [ -d "telar-content/objects" ]; then
             # Extract URL and baseurl from _config.yml
             SITE_URL=$(python3 -c "import yaml; config=yaml.safe_load(open('_config.yml')); print(config.get('url', ''))")
             BASE_URL=$(python3 -c "import yaml; config=yaml.safe_load(open('_config.yml')); print(config.get('baseurl', ''))")
@@ -185,31 +194,33 @@ jobs:
 
             echo "Generating IIIF tiles with base URL: $FULL_URL"
 
-            # v0.5.0: Removed --source-dir parameter (script now defaults to components/images/)
+            # v0.5.0: Removed --source-dir parameter (script now defaults to telar-content/objects/)
             # v0.5.0: Script is now CSV-driven - only processes objects listed in objects.json
             python scripts/generate_iiif.py \
               --output-dir _site/iiif/objects \
               --base-url "$FULL_URL"
           else
-            echo "No components/images directory found. Skipping IIIF generation."
+            echo "No telar-content/objects directory found. Skipping IIIF generation."
           fi
 
       - name: Copy generated IIIF tiles to cache directory
         if: steps.detect-changes.outputs.needs_iiif == 'true'
         run: |
-          if [ -d "_site/iiif/objects" ]; then
+          if [ -d "_site/iiif/objects" ] && [ "$(ls -A _site/iiif/objects 2>/dev/null)" ]; then
             echo "✓ Copying IIIF tiles to cache directory for future builds"
             mkdir -p cached-iiif
             cp -r _site/iiif/objects/* cached-iiif/
+          else
+            echo "No IIIF tiles to cache (directory empty or missing)"
           fi
 
       - name: Save IIIF tiles to cache
         if: steps.detect-changes.outputs.needs_iiif == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: cached-iiif/
           # v0.5.0: Flattened image directory structure
-          key: iiif-tiles-${{ hashFiles('components/images/**') }}
+          key: iiif-tiles-${{ hashFiles('telar-content/objects/**') }}
 
       - name: Restore IIIF tiles from cache to _site (when skipping regeneration)
         if: steps.detect-changes.outputs.needs_iiif == 'false'
@@ -225,7 +236,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: _site
 
