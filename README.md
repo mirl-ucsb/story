@@ -1,6 +1,6 @@
 # Telar
 
-![Version](https://img.shields.io/badge/version-0.8.1--beta-orange) ![License](https://img.shields.io/badge/license-MIT-blue)
+![Version](https://img.shields.io/badge/version-0.9.2--beta-orange) ![License](https://img.shields.io/badge/license-MIT-blue)
 
 **[Versión en español abajo](#español)** | **[English version](#telar)**
 
@@ -12,7 +12,7 @@ A minimal-computing framework for creating layered IIIF visual narratives for di
 
 ---
 
-> **⚠️ Beta Release - v0.8.1-beta**
+> **⚠️ Beta Release - v0.9.2-beta**
 > This is a beta release for testing and feedback. For detailed documentation, visit **[telar.org/docs](https://telar.org/docs)**.
 
 > **Warning:** If upgrading from v0.3.4 or earlier, see the [Upgrading Telar Guide](https://telar.org/docs/2-workflows/3-upgrading/) for instructions.
@@ -56,8 +56,8 @@ Plan your narrative structure before building. Sketch out your stories, identify
    - **CSV files**: Edit CSV files directly in your repository
 
 3. **Add your content**
-   - Upload images to `components/images/` or use IIIF manifests from institutions
-   - Create markdown files in `components/texts/stories/` for your narrative text
+   - Upload images to `telar-content/objects/` or use IIIF manifests from institutions
+   - Create markdown files in `telar-content/texts/stories/` for your narrative text
    - Configure your objects and stories in Google Sheets or CSV files
 
 4. **Enable GitHub Pages**
@@ -97,9 +97,9 @@ Telar is developed by Adelaida Ávila, Juan Cobo Betancourt, Natalie Cobo, Santi
 
 Telar is built with:
 - [Jekyll](https://jekyllrb.com/) - Static site generator
-- [UniversalViewer](https://universalviewer.io/) - IIIF viewer
+- [Tify](https://tify.rocks/) - IIIF viewer
 - [Bootstrap 5](https://getbootstrap.com/) - CSS framework
-- [iiif-static](https://github.com/bodleian/iiif-static-choices) - IIIF tile generator
+- [libvips](https://www.libvips.org/) - IIIF tile generator
 
 It is based on [Paisajes Coloniales](https://paisajescoloniales.com/), and inspired by:
 - [Wax](https://minicomp.github.io/wax/) - Minimal computing for digital exhibitions
@@ -116,7 +116,7 @@ It is based on [Paisajes Coloniales](https://paisajescoloniales.com/), and inspi
 
 # Español
 
-![Versión](https://img.shields.io/badge/versi%C3%B3n-0.8.1--beta-orange) ![Licencia](https://img.shields.io/badge/licencia-MIT-blue)
+![Versión](https://img.shields.io/badge/versi%C3%B3n-0.9.2--beta-orange) ![Licencia](https://img.shields.io/badge/licencia-MIT-blue)
 
 **[Versión en español](#español)** | **[English version above](#telar)**
 
@@ -128,7 +128,7 @@ Un marco de computación mínima para crear narrativas visuales con capas de tex
 
 ---
 
-> **⚠️ Versión Beta - v0.8.1-beta**
+> **⚠️ Versión Beta - v0.9.2-beta**
 > Esta es una versión beta para pruebas y retroalimentación. Para documentación detallada, visita **[telar.org/guia](https://telar.org/guia)**.
 
 > **Advertencia:** Si estás actualizando desde v0.3.4 o anterior, consulta la [Guía de Actualización de Telar](https://telar.org/guia/flujos-de-trabajo/actualizacion/) para obtener instrucciones.
@@ -172,8 +172,8 @@ Planifica tu estructura narrativa antes de construir. Esboza tus historias, iden
    - **Archivos CSV**: Edita archivos CSV directamente en tu repositorio
 
 3. **Añade tu contenido**
-   - Sube imágenes a `components/images/` o usa manifiestos IIIF de instituciones
-   - Crea archivos markdown en `components/texts/stories/` para tu texto narrativo
+   - Sube imágenes a `telar-content/objects/` o usa manifiestos IIIF de instituciones
+   - Crea archivos markdown en `telar-content/texts/stories/` para tu texto narrativo
    - Configura tus objetos e historias en Google Sheets o archivos CSV
 
 4. **Habilita GitHub Pages**
@@ -213,9 +213,9 @@ Telar es desarrollado por Adelaida Ávila, Juan Cobo Betancourt, Natalie Cobo, S
 
 Telar está construido con:
 - [Jekyll](https://jekyllrb.com/) - Generador de sitios estáticos
-- [UniversalViewer](https://universalviewer.io/) - Visor IIIF
+- [Tify](https://tify.rocks/) - Visor IIIF
 - [Bootstrap 5](https://getbootstrap.com/) - Marco CSS
-- [iiif-static](https://github.com/bodleian/iiif-static-choices) - Generador de teselas IIIF
+- [libvips](https://www.libvips.org/) - Generador de teselas IIIF
 
 Está basado en [Paisajes Coloniales](https://paisajescoloniales.com/), e inspirado por:
 - [Wax](https://minicomp.github.io/wax/) - Computación mínima para exhibiciones digitales

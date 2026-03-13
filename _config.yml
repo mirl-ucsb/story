@@ -7,8 +7,8 @@ description: This project investigates a 16th century khipu in UC Santa
   Barbara's Art, Design & Architecture Museum through material, haptic, and digital
   imaging methods to explore how Andean recordkeeping systems encode knowledge in
   fiber and form. A Spanish translation of this project will be available soon.
-baseurl: ""
 url: https://khipu.mirl.arthistory.ucsb.edu
+baseurl: ""
 author: Alicia Boswell, Alida Jekabson, Izzy Devlin, Jeff O'Brien, María Lumbreras,
   Juan Cobo Betancourt
 email: jeffobrien@ucsb.edu
@@ -46,7 +46,6 @@ collection_interface:
 #    - If running locally: Run `python3 scripts/fetch_google_sheets.py` before building
 google_sheets:
   enabled: true
-  shared_url: https://docs.google.com/spreadsheets/d/1jsL_FovT5JCsTBk7Qz_iSJNsDuY5wt-h6o1lAfbJ1D8/edit
   published_url: https://docs.google.com/spreadsheets/d/e/2PACX-1vTodWYk4eyiNgqnP3s499aY-AhsLoSyAVbDpX7gCNTnOHVRqOt-8TKOOL50rU8nQUHq-vj0C7JucEqC/pubhtml
 
 
@@ -110,8 +109,8 @@ show_drafts: false
 
 # Telar Settings (version information)
 telar:
-  version: "0.8.1-beta"
-  release_date: "2026-02-27"
+  version: "0.9.2-beta"
+  release_date: "2026-03-13"
 
 # Plugins
 plugins:

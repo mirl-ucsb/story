@@ -16,10 +16,10 @@ It creates four types of collection files:
 - Stories (_jekyll-files/_stories/): One file per story, linking to its
   JSON data file and setting the story layout.
 - Glossary (_jekyll-files/_glossary/): Terms from both user markdown
-  files (components/texts/glossary/) and demo content, with glossary-
+  files (telar-content/texts/glossary/) and demo content, with glossary-
   to-glossary link processing.
 - Pages (_jekyll-files/_pages/): User-authored pages from
-  components/texts/pages/, processed through the widget and glossary
+  telar-content/texts/pages/, processed through the widget and glossary
   pipeline.
 
 The script respects development feature flags (skip_stories,
@@ -27,7 +27,7 @@ skip_collections) from _config.yml, which allow developers to
 temporarily suppress certain collections during development.
 Legacy names (hide_stories, hide_collections) are also supported.
 
-Version: v0.8.1-beta
+Version: v0.9.1-beta
 """
 
 import json
@@ -45,6 +45,26 @@ from telar.images import process_images
 from telar.glossary import process_glossary_links, load_glossary_terms
 from telar.markdown import read_markdown_file, process_inline_content
 from telar.core import find_csv_with_fallback
+from telar.latex import has_latex
+
+# Fields already handled explicitly in generate_objects() frontmatter.
+# Any key NOT in this set is treated as a custom field and written to extra_metadata.
+KNOWN_OBJECT_FIELDS = {
+    'object_id', 'title', 'creator', 'period', 'medium', 'dimensions',
+    'location', 'credit', 'thumbnail', 'iiif_manifest', 'source_url',
+    'source', 'object_warning', 'object_warning_short', 'year',
+    'object_type', 'subjects', 'is_featured_sample', '_demo',
+    'description', 'featured',
+}
+
+
+def _yaml_escape(value):
+    """Escape a string value for safe inclusion in double-quoted YAML."""
+    s = str(value)
+    s = s.replace('\\', '\\\\')
+    s = s.replace('"', '\\"')
+    return s
+
 
 def generate_objects():
     """Generate object markdown files from objects.json"""
@@ -74,21 +94,29 @@ def generate_objects():
         # Generate main object page
         filepath = objects_dir / f"{object_id}.md"
 
-        content = f"""---
-object_id: {obj.get('object_id', '')}
-title: "{obj.get('title', '')}"
-creator: "{obj.get('creator', '')}"
-period: "{obj.get('period', '')}"
-medium: "{obj.get('medium', '')}"
-dimensions: "{obj.get('dimensions', '')}"
-location: "{obj.get('location', '')}"
-credit: "{obj.get('credit', '')}"
-thumbnail: "{obj.get('thumbnail', '')}"
-iiif_manifest: "{obj.get('iiif_manifest', '')}"
-object_warning: "{obj.get('object_warning', '')}"
-object_warning_short: "{obj.get('object_warning_short', '')}"
-"""
-        # Add optional fields only if they have values
+        # Build front matter, omitting empty fields so Liquid {% if %}
+        # conditionals work correctly (empty strings are truthy in Liquid)
+        content = f'---\nobject_id: {object_id}\n'
+        content += f'title: "{_yaml_escape(obj.get("title", ""))}"\n'
+
+        # Metadata fields — only include if non-empty
+        metadata_fields = {
+            'creator': obj.get('creator', ''),
+            'period': obj.get('period', ''),
+            'medium': obj.get('medium', ''),
+            'dimensions': obj.get('dimensions', ''),
+            'location': obj.get('source', '') or obj.get('location', ''),
+            'credit': obj.get('credit', ''),
+            'thumbnail': obj.get('thumbnail', ''),
+            'iiif_manifest': obj.get('iiif_manifest', ''),
+            'object_warning': obj.get('object_warning', ''),
+            'object_warning_short': obj.get('object_warning_short', ''),
+        }
+        for key, value in metadata_fields.items():
+            if value:
+                content += f'{key}: "{_yaml_escape(str(value))}"\n'
+
+        # Additional optional fields
         if obj.get('year'):
             content += f'year: "{obj.get("year")}"\n'
         if obj.get('object_type'):
@@ -101,10 +129,31 @@ object_warning_short: "{obj.get('object_warning_short', '')}"
         if is_demo:
             content += "demo: true\n"
 
+        # Collect custom fields not in the known set
+        extra = {}
+        for key, value in obj.items():
+            if key in KNOWN_OBJECT_FIELDS:
+                continue
+            if value is None or (isinstance(value, float) and str(value) == 'nan'):
+                continue
+            s = str(value).strip()
+            if s and s.lower() != 'nan':
+                extra[key] = s
+
+        if extra:
+            content += "extra_metadata:\n"
+            for key, value in extra.items():
+                content += f'  {key}: "{_yaml_escape(value)}"\n'
+
+        # Check description for LaTeX content
+        description = obj.get('description', '')
+        if description and has_latex(description):
+            content += "has_latex: true\n"
+
         content += f"""layout: object
 ---
 
-{obj.get('description', '')}
+{description}
 """
 
         with open(filepath, 'w') as f:
@@ -184,6 +233,11 @@ def _generate_glossary_from_csv(csv_path, glossary_dir, glossary_terms):
         for warning in warnings_list:
             print(f"  Warning: {warning}")
 
+        # Check definition for LaTeX content
+        latex_flag = ""
+        if has_latex(processed):
+            latex_flag = "\nhas_latex: true"
+
         # Build related_terms frontmatter
         related_str = ''
         if related_terms:
@@ -193,7 +247,7 @@ def _generate_glossary_from_csv(csv_path, glossary_dir, glossary_terms):
         filepath = glossary_dir / f"{term_id}.md"
         output_content = f"""---
 term_id: {term_id}
-title: "{title}"{related_str}
+title: "{title}"{related_str}{latex_flag}
 layout: glossary
 ---
 
@@ -209,7 +263,7 @@ def _generate_glossary_from_markdown(md_path, glossary_dir, glossary_terms):
     """Generate glossary files from markdown (legacy method).
 
     Args:
-        md_path: Path to components/texts/glossary/
+        md_path: Path to telar-content/texts/glossary/
         glossary_dir: Output directory for Jekyll files
         glossary_terms: Dict of term_id -> title for link processing
     """
@@ -257,10 +311,15 @@ def _generate_glossary_from_markdown(md_path, glossary_dir, glossary_terms):
         for warning in warnings_list:
             print(f"  Warning: {warning}")
 
+        # Check definition for LaTeX content
+        latex_flag = ""
+        if has_latex(processed):
+            latex_flag = "\nhas_latex: true"
+
         # Write to collection with layout added
         output_content = f"""---
 {frontmatter_text}
-layout: glossary
+layout: glossary{latex_flag}
 ---
 
 {processed}
@@ -276,8 +335,8 @@ def generate_glossary():
     """Generate glossary markdown files from user content and demo JSON.
 
     Reads from (in order of precedence):
-    - components/structures/glossary.csv or glosario.csv (v0.8.0+ preferred)
-    - components/texts/glossary/*.md (legacy markdown files)
+    - telar-content/spreadsheets/glossary.csv or glosario.csv (v0.8.0+ preferred)
+    - telar-content/texts/glossary/*.md (legacy markdown files)
     - _data/demo-glossary.json (demo content from bundle)
 
     If both CSV and markdown exist, CSV takes precedence and a warning is shown.
@@ -294,8 +353,8 @@ def generate_glossary():
     # Load glossary terms for link processing (enables glossary-to-glossary linking)
     glossary_terms = load_glossary_terms()
 
-    csv_path = Path(find_csv_with_fallback('components/structures/glossary', 'glosario'))
-    md_path = Path('components/texts/glossary')
+    csv_path = Path(find_csv_with_fallback('telar-content/spreadsheets/glossary', 'glosario'))
+    md_path = Path('telar-content/texts/glossary')
 
     # 1. Process user glossary from CSV (preferred) or markdown (legacy)
     if csv_path.exists():
@@ -441,15 +500,15 @@ data_file: {identifier}
 def generate_pages():
     """Generate processed page files from user markdown sources.
 
-    Reads from components/texts/pages/*.md, processes widgets and glossary links,
+    Reads from telar-content/texts/pages/*.md, processes widgets and glossary links,
     and outputs to _jekyll-files/_pages/ for the pages collection.
     """
-    source_dir = Path('components/texts/pages')
+    source_dir = Path('telar-content/texts/pages')
     output_dir = Path('_jekyll-files/_pages')
 
     # Skip if source directory doesn't exist
     if not source_dir.exists():
-        print("No components/texts/pages/ directory found - skipping page generation")
+        print("No telar-content/texts/pages/ directory found - skipping page generation")
         return
 
     # Clean up old files
