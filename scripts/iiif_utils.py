@@ -20,7 +20,7 @@ without duplicating it.
 None of these functions are meant to be run directly. They are
 imported by the two entry-point scripts.
 
-Version: v0.9.2-beta
+Version: v0.9.3-beta
 """
 
 import json
@@ -219,9 +219,10 @@ def generate_tiles_libvips(processed_path, tiles_dir, object_id, base_url):
     if vips_props.exists():
         vips_props.unlink()
 
-    # Post-process: patch info.json and generate full/max image
-    patch_info_json(tiles_dir, object_id, base_url)
+    # Post-process: generate full/max image first (creates full/ directories
+    # that patch_info_json will scan), then patch info.json with correct sizes.
     generate_full_max(processed_path, tiles_dir)
+    patch_info_json(tiles_dir, object_id, base_url)
 
 
 def patch_info_json(tiles_dir, object_id, base_url):
@@ -268,11 +269,24 @@ def patch_info_json(tiles_dir, object_id, base_url):
                 sizes.append({'width': sw, 'height': sh})
 
     # Fallback: if no thumbnail directories found (libvips <8.17 doesn't
-    # create them), compute a single size from the image dimensions
-    # already present in info.json.
+    # create them), compute sizes from the scaleFactors in the tiles spec.
+    # Each scale factor gets a correctly scaled size entry so that
+    # OpenSeadragon's levelSizes array has accurate level dimensions.
+    # A single full-res entry would coincidentally match maxLevel and
+    # cause OSD to use wrong dimensions for edge tile calculations.
     if not sizes:
         if img_w and img_h:
-            sizes.append({'width': img_w, 'height': img_h})
+            scale_factors = []
+            for tile in info.get('tiles', []):
+                scale_factors.extend(tile.get('scaleFactors', []))
+            if scale_factors:
+                for sf in sorted(scale_factors):
+                    sizes.append({
+                        'width': -(-img_w // sf),  # ceil division
+                        'height': -(-img_h // sf),
+                    })
+            else:
+                sizes.append({'width': img_w, 'height': img_h})
 
     if sizes:
         sizes.sort(key=lambda s: s['width'])
@@ -323,6 +337,29 @@ def generate_full_max(processed_path, tiles_dir):
         wh_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(dest, wh_dir / 'default.jpg')
 
+    # Generate full/{w},{h}/ thumbnails for each scaleFactor level.
+    # patch_info_json (which runs after this) scans full/ to build the
+    # sizes array.  Every size it reports must have a corresponding file,
+    # otherwise the homepage thumbnail JS will hit a 404.
+    info_path = tiles_dir / 'info.json'
+    if info_path.exists():
+        import json as _json
+        with open(info_path) as f:
+            info = _json.load(f)
+        scale_factors = []
+        for tile in info.get('tiles', []):
+            scale_factors.extend(tile.get('scaleFactors', []))
+        for sf in scale_factors:
+            if sf == 1:
+                continue  # full-res already created above
+            sw = -(-w // sf)  # ceil division
+            sh = -(-h // sf)
+            sf_dir = tiles_dir / 'full' / f'{sw},{sh}' / '0'
+            if not sf_dir.exists():
+                sf_dir.mkdir(parents=True, exist_ok=True)
+                thumb = img.resize((sw, sh), Image.LANCZOS)
+                thumb.save(sf_dir / 'default.jpg', 'JPEG', quality=85)
+
     # Generate width-only thumbnails for sizes that IIIF viewers request
     # but that don't exist in the static Level 0 tile pyramid. TIFY v0.35
     # always requests full/96,/0/default.jpg for its page thumbnail
@@ -338,6 +375,24 @@ def generate_full_max(processed_path, tiles_dir):
             thumb_dir.mkdir(parents=True, exist_ok=True)
             thumb = img.resize((tw, th), Image.LANCZOS)
             thumb.save(thumb_dir / 'default.jpg', 'JPEG', quality=85)
+
+    # Create full/{w},{h}/ counterparts for any width-only directories
+    # (from libvips or from the Tify thumbnail above). The homepage
+    # thumbnail JS constructs URLs as full/{w},{h}/, not full/{w},/.
+    full_dir = tiles_dir / 'full'
+    if full_dir.exists():
+        for entry in full_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            match = re.match(r'^(\d+),$', entry.name)
+            if match:
+                sw = int(match.group(1))
+                sh = int(round(h * sw / w))
+                wh_path = full_dir / f'{sw},{sh}' / '0'
+                src_file = entry / '0' / 'default.jpg'
+                if src_file.exists() and not wh_path.exists():
+                    wh_path.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, wh_path / 'default.jpg')
 
 
 
