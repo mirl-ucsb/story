@@ -42,7 +42,7 @@ This script is designed to be called from generate_iiif.py when it
 detects a .pdf source file, but it can also be run standalone for
 testing.
 
-Version: v0.9.2-beta
+Version: v1.7.0
 """
 
 import json
@@ -51,8 +51,7 @@ import tempfile
 from pathlib import Path
 
 from iiif_utils import (
-    detect_tile_backend, generate_tiles_libvips, patch_info_json,
-    generate_full_max, load_object_metadata,
+    patch_info_json, generate_full_max, load_object_metadata,
 )
 
 
@@ -68,16 +67,29 @@ def render_pdf_pages(pdf_path, output_dir, dpi=200):
         List of (page_number, image_path, width, height) tuples.
         Page numbers are 1-indexed.
     """
-    import fitz
+    # `pymupdf` is the library's own name for itself; the `fitz` alias it
+    # shipped under is deprecated, and importing by it prints a warning into
+    # the build output of every site that tiles a PDF.
+    import pymupdf
 
-    doc = fitz.open(str(pdf_path))
+    doc = pymupdf.open(str(pdf_path))
     pages_info = []
 
+    MAX_SIDE_PX = 10_000  # ceiling on the longest rendered side, guards against OOM
     for page_num in range(len(doc)):
         page = doc[page_num]
         # Scale from 72 DPI (PDF default) to target DPI
         scale = dpi / 72
-        matrix = fitz.Matrix(scale, scale)
+        # Clamp the scale so a pathologically large MediaBox cannot render to a
+        # multi-gigapixel pixmap and exhaust memory. Only activates for genuinely
+        # oversized pages; normal archival pages are far below the ceiling.
+        page_long_side = max(page.rect.width, page.rect.height, 1)
+        max_scale = MAX_SIDE_PX / page_long_side
+        if scale > max_scale:
+            print(f"  [WARNING] Page {page_num + 1} is very large; clamping render "
+                  f"scale to keep the longest side under {MAX_SIDE_PX}px")
+            scale = max_scale
+        matrix = pymupdf.Matrix(scale, scale)
         pixmap = page.get_pixmap(matrix=matrix)
 
         # Save as JPEG (1-indexed page numbers)
@@ -246,7 +258,7 @@ def _create_page_manifest(page_dir, object_id, page_number, width, height, base_
         json.dump(manifest, f, indent=2)
 
 
-def process_pdf_object(pdf_path, output_dir, object_id, base_url, backend):
+def process_pdf_object(pdf_path, output_dir, object_id, base_url):
     """Process a PDF into tiled IIIF pages with manifests.
 
     This is the main orchestrator, called by generate_iiif.py when it
@@ -254,13 +266,14 @@ def process_pdf_object(pdf_path, output_dir, object_id, base_url, backend):
     each one, creates per-page and multi-canvas manifests, and copies
     page 1 as the thumbnail image.
 
+    PDF pages are always tiled via `vips dzsave` — libvips is required
+    for PDF processing regardless of the image backend in use.
+
     Args:
         pdf_path: Path to the source PDF file
         output_dir: Output directory for this object (e.g. iiif/objects/my-doc)
         object_id: Object identifier
         base_url: Base URL for the site
-        backend: Tile backend name (currently only 'libvips' is supported
-                 for PDF processing)
     """
     from PIL import Image
 
@@ -301,11 +314,13 @@ def process_pdf_object(pdf_path, output_dir, object_id, base_url, backend):
             if vips_props.exists():
                 vips_props.unlink()
 
-            # Post-process: patch info.json with page-specific URL
-            patch_info_json(page_dir, f"{object_id}/{page_id}", base_url)
-
-            # Generate full/max/0/default.jpg
+            # patch_info_json's sizes array is built by listing full/ on
+            # disk, so full/ must be complete — every scaleFactor
+            # derivative written — before info.json is patched.
             generate_full_max(image_path, page_dir)
+
+            # Post-process: patch info.json with page-specific URL and sizes
+            patch_info_json(page_dir, f"{object_id}/{page_id}", base_url)
 
             # Create per-page single-canvas manifest
             _create_page_manifest(page_dir, object_id, page_number, width, height, base_url, metadata)

@@ -27,11 +27,37 @@ The function returns a pandas DataFrame wrapping a single dictionary with
 a `stories` key, which `csv_to_json()` in the core module serialises to
 `_data/project.json`.
 
-Version: v0.8.0-beta
+Version: v1.8.0
 """
 
 import re
+
 import pandas as pd
+
+
+def _story_numbers(df):
+    """Each row's order as its story's number, or '' when the cell is empty.
+
+    The number is the story's address when it has no `story_id`: the build
+    looks for `story-<number>.json`, named after the story's own sheet.
+    Empty cells are skipped. In a column pandas widened to float, whole
+    numbers are written as integers.
+    """
+    if 'order' not in df.columns:
+        return [''] * len(df)
+    column = df['order']
+    blank = column.isna()
+    widened = (column.dtype.kind == 'f' and blank.any()
+               and all(float(value).is_integer() for value in column[~blank]))
+    numbers = []
+    for (_, row), value, empty in zip(df.iterrows(), column, blank):
+        if empty:
+            numbers.append('')
+        elif widened:
+            numbers.append(str(int(value)))
+        else:
+            numbers.append(str(row['order']).strip())
+    return numbers
 
 
 def process_project_setup(df):
@@ -49,9 +75,9 @@ def process_project_setup(df):
     """
     stories_list = []
     seen_ids = set()  # Track duplicate story_ids
+    seen_orders = set()  # Track duplicate order numbers
 
-    for _, row in df.iterrows():
-        order = str(row.get('order', '')).strip()
+    for (row_idx, row), order in zip(df.iterrows(), _story_numbers(df)):
         title = row.get('title', '')
         subtitle = row.get('subtitle', '')
         byline = row.get('byline', '')
@@ -64,19 +90,30 @@ def process_project_setup(df):
             if pd.notna(story_id_raw):
                 story_id = str(story_id_raw).strip()
 
-        # Skip rows with empty order (placeholder rows)
-        if not order or not pd.notna(title):
+        # Skip rows with empty order or blank/whitespace-only title (placeholder rows)
+        title_str = str(title).strip() if pd.notna(title) else ''
+        if not order or not title_str:
             continue
+
+        # Warn on duplicate order numbers — two stories sharing an order would
+        # collide on the same story number / output slug
+        if order in seen_orders:
+            print(f"  Warning: Duplicate order '{order}' found in project.csv (row {row_idx})")
+        seen_orders.add(order)
 
         # Validate story_id if provided
         if story_id:
             # Check for invalid characters (must be lowercase, numbers, hyphens, underscores)
             if not re.match(r'^[a-z0-9\-_]+$', story_id):
-                print(f"  Warning: story_id '{story_id}' contains invalid characters. Use lowercase letters, numbers, hyphens, underscores only.")
+                print(f"  Warning: story_id '{story_id}' contains invalid characters (lowercase letters, numbers, hyphens, underscores only) — skipping this row so a malformed id cannot become a data-file name.")
+                continue
 
-            # Check for duplicates
+            # Check for duplicates — skip the duplicate row entirely so routing
+            # and encryption decisions stay unambiguous (no row silently shadows
+            # another)
             if story_id in seen_ids:
-                print(f"  Warning: Duplicate story_id '{story_id}' found in project.csv")
+                print(f"  Warning: Duplicate story_id '{story_id}' in project.csv (row {row_idx}) — skipping duplicate row")
+                continue
             seen_ids.add(story_id)
 
         story_entry = {
@@ -99,6 +136,11 @@ def process_project_setup(df):
         # Add protected flag if set to yes/true/sí/si (v0.8.0+)
         if pd.notna(protected) and str(protected).strip().lower() in ('yes', 'true', 'sí', 'si'):
             story_entry['protected'] = True
+
+        # Add show_sections flag if set to yes/true/sí/si (v1.2.0+)
+        show_sections = row.get('show_sections', '')
+        if pd.notna(show_sections) and str(show_sections).strip().lower() in ('yes', 'true', 'sí', 'si'):
+            story_entry['show_sections'] = True
 
         stories_list.append(story_entry)
 

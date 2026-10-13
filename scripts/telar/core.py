@@ -25,30 +25,47 @@ checks for Christmas Tree Mode in `_config.yml`, then converts the three
 CSV types in order: project setup, objects, and story files. Story files
 are discovered dynamically — every CSV in `telar-content/spreadsheets/` that
 is not a system file (`project.csv`, `objects.csv`, or their Spanish
-equivalents) is treated as a story. After all CSVs are converted, demo
-content is loaded and merged if available. Protected stories (v0.8.0+)
-are then encrypted using the story_key from _config.yml.
+equivalents) is treated as a story. The `--story` flag narrows this to a
+single CSV by stem name, which speeds up iteration when working on one
+story at a time. After all CSVs are converted, demo content is loaded and
+merged if available. Finally, `generate_search_data()` builds the
+Lunr.js search index and facet counts that power the gallery's
+browse-and-search interface.
 
-Version: v0.9.1-beta
+Protected stories are NOT encrypted here. Their `_data` JSON stays
+plaintext (gitignored, consumed only at build time); encryption happens
+post-build in `scripts/encrypt_protected_stories.py`, which encrypts the
+Jekyll-rendered step HTML together with the steps JSON in one envelope. This
+pipeline only checks the prerequisites for that step — a story_key, and a
+build workflow that actually runs it — and refuses to run when they are
+missing, so a site can never publish protected content because its workflow
+predates the build-time encryption step.
+
+Version: v1.8.1
 """
 
 import os
+import sys
 import json
 from pathlib import Path
 
-import pandas as pd
 import yaml
 
-from telar.csv_utils import sanitize_dataframe, normalize_column_names, is_header_row
+from telar.csv_utils import (sanitize_dataframe, normalize_column_names,
+                             is_header_row, read_sheet, text_column_dtypes,
+                             GLOSSARY_COLUMN_ALIASES, OBJECT_FIELDS,
+                             ColumnCollisionError, ReservedColumnError)
 from telar.processors.project import process_project_setup
 from telar.processors.objects import process_objects
 from telar.processors.stories import process_story
 from telar.demo import load_demo_bundle, merge_demo_content, fetch_demo_content_if_enabled
-from telar.encryption import encrypt_story, get_protected_stories, get_story_key_from_config
+from telar.encryption import get_protected_stories, get_story_key_from_config
+from telar.media_type import AUDIO_EXTENSIONS
 from telar.search import generate_search_data
 
 
-def csv_to_json(csv_path, json_path, process_func=None):
+def csv_to_json(csv_path, json_path, process_func=None, canonical_fields=None,
+                refusals=None, failures=None, sheet_aliases=None):
     """
     Convert CSV file to JSON.
 
@@ -56,16 +73,48 @@ def csv_to_json(csv_path, json_path, process_func=None):
         csv_path: Path to input CSV file
         json_path: Path to output JSON file
         process_func: Optional function to process the dataframe before conversion
+        canonical_fields: The canonical column names this sheet's consumer
+            reads, scoping the bilingual alias map to them. None applies the
+            whole map.
+        refusals: A list that receives `(source, message)` when the sheet is
+            refused, or when a sheet it reads (the glossary) is. The caller
+            decides the exit; without a list a refusal is only printed.
+        sheet_aliases: Aliases only this sheet reads, as the glossary's own,
+            used for its column names and for its second header row.
+        failures: A list that receives `(source, message)` when any other
+            error stops the conversion. Passed for the sheets every page
+            depends on (project, objects), whose loss fails the build. A
+            story's error is only printed: the build drops that story.
+
+    A refused sheet's earlier output is deleted, and so is a failed one's
+    when `failures` is passed. The stale-data cleanup
+    keeps any JSON whose source still exists, so without the deletion a
+    warm build would serve the last version that converted.
+
+    Returns:
+        bool: True if the JSON was written, False on skip (missing input) or error.
+        Callers use this to avoid running downstream steps on stale/absent output.
     """
     if not os.path.exists(csv_path):
         print(f"Warning: {csv_path} not found. Skipping.")
-        return
+        return False
 
     try:
         # Read CSV file with pandas
         # Note: We can't use pandas' comment parameter because it treats # anywhere as a comment,
         # which breaks hex color codes like #2c3e50 and markdown headers (## Title) in multi-line cells
-        df = pd.read_csv(csv_path, on_bad_lines='warn')
+        # The columns matched against a fixed vocabulary are pinned to text:
+        # dtype inference reads the whole column, so a flag would otherwise
+        # mean one thing in a column with a blank cell and another in a column
+        # without one. See TEXT_COLUMNS in telar.csv_utils.
+        # Only a blank cell is missing. pandas' other missing-value tokens
+        # (`NA`, `N/A`, `null`, `None`, `nan`...) are text an author typed,
+        # as the glossary readers and the Compositor read them: an object
+        # titled `NA` is titled `NA`, and the token counts as a cell in the
+        # bilingual header-row test.
+        df = read_sheet(csv_path, on_bad_lines='warn',
+                        dtype=text_column_dtypes(),
+                        keep_default_na=False, na_values=[''])
 
         # Filter out comment rows (first column value starts with #)
         # This handles both # and "# patterns while preserving markdown headers in multi-line cells
@@ -78,12 +127,12 @@ def csv_to_json(csv_path, json_path, process_func=None):
         # Check if first data row is actually a duplicate header row (bilingual CSVs)
         if len(df) > 0:
             first_row = df.iloc[0]
-            if is_header_row(first_row.values):
-                print(f"  [INFO] Detected duplicate header row - skipping row 2")
+            if is_header_row(first_row.values, sheet_aliases=sheet_aliases):
+                print(f"  [WARN] Detected duplicate header row - skipping row 2")
                 df = df.iloc[1:].reset_index(drop=True)
 
         # Normalize column names (Spanish -> English) for bilingual support
-        df = normalize_column_names(df)
+        df = normalize_column_names(df, canonical_fields, sheet_aliases=sheet_aliases)
 
         # Sanitize user data - remove Christmas tree emoji to prevent accidental triggering
         df = sanitize_dataframe(df)
@@ -111,9 +160,24 @@ def csv_to_json(csv_path, json_path, process_func=None):
             json.dump(data, f, indent=2, ensure_ascii=False)
 
         print(f"\u2713 Converted {csv_path} to {json_path}")
+        return True
+
+    except (ColumnCollisionError, ReservedColumnError) as e:
+        source = getattr(e, 'source', None) or str(csv_path)
+        print(f"❌ Error converting {csv_path}: {e}")
+        if os.path.exists(json_path):
+            os.remove(json_path)
+        if refusals is not None:
+            refusals.append((source, str(e)))
+        return False
 
     except Exception as e:
         print(f"❌ Error converting {csv_path}: {e}")
+        if failures is not None:
+            if os.path.exists(json_path):
+                os.remove(json_path)
+            failures.append((str(csv_path), str(e)))
+        return False
 
 
 def find_csv_with_fallback(base_path, spanish_name):
@@ -141,31 +205,46 @@ def find_csv_with_fallback(base_path, spanish_name):
         return english_path
 
 
-def _encrypt_protected_stories(data_dir):
-    """
-    Encrypt story JSON files that are marked as protected.
+# The build workflow must invoke this script for protected content to be
+# encrypted before deployment. The prerequisite check below greps build.yml for the
+# script path itself, so the check cannot drift from the thing it checks.
+ENCRYPT_SCRIPT_MARKER = 'encrypt_protected_stories.py'
+BUILD_WORKFLOW_PATH = Path('.github/workflows/build.yml')
 
-    Reads project.json to find protected stories, then encrypts their
-    corresponding JSON files using the story_key from _config.yml.
+# Exit code for "protected stories cannot be encrypted downstream", as
+# distinct from a conversion that failed. Every JSON file is already
+# written when this check runs, so what exits is a statement about a
+# future build, not about the work just done. A build step fails on any
+# non-zero and so is unaffected; the upgrade reads the value to tell a
+# site it must not stamp from a site whose owner has one thing left to do.
+PROTECTED_PREREQUISITE_EXIT = 3
+
+# Exit code for a sheet the build will not publish without: one it refuses
+# (ColumnCollisionError, ReservedColumnError), or a project or objects sheet
+# that fails to convert, since every page depends on those two. Every other
+# sheet is converted first, so one build names each of them. The upgrade treats it as any failed
+# regeneration: the site cannot publish until the sheet changes.
+SHEET_REFUSED_EXIT = 4
+
+
+def _check_protected_prerequisites(data_dir, workflow_path=None):
+    """
+    Fail closed when protected stories cannot be encrypted downstream.
+
+    Encryption happens post-build (encrypt_protected_stories.py encrypts
+    the Jekyll-rendered steps). That step only runs if the build workflow
+    invokes it, and workflow files cannot be shipped through the upgrade
+    pipeline (the upgrade token lacks workflow write permission). So a site
+    can hold upgraded scripts and a build.yml that predates the encrypt
+    step — and that combination would deploy protected stories as plaintext
+    with nothing failing. This check makes the pipeline itself refuse to run
+    in that state.
 
     Args:
-        data_dir: Path to _data directory containing JSON files
+        data_dir: Path to _data directory containing project.json
+        workflow_path: Path to the build workflow (test seam; defaults to
+            .github/workflows/build.yml)
     """
-    # Read _config.yml for story_key
-    config_path = Path('_config.yml')
-    if not config_path.exists():
-        return
-
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-    except Exception as e:
-        print(f"  [WARN] Could not read _config.yml: {e}")
-        return
-
-    story_key = get_story_key_from_config(config)
-
-    # Read project.json to find protected stories
     project_path = data_dir / 'project.json'
     if not project_path.exists():
         return
@@ -183,41 +262,176 @@ def _encrypt_protected_stories(data_dir):
         print("No protected stories found.")
         return
 
+    # Prerequisite 1: a story_key must exist for the downstream encrypt step.
+    story_key = None
+    config_path = Path('_config.yml')
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            story_key = get_story_key_from_config(config)
+        except Exception as e:
+            print(f"  [WARN] Could not read _config.yml: {e}")
+
     if not story_key:
-        print(f"  ⚠️ Found {len(protected_stories)} protected story/stories but no story_key in _config.yml")
-        print("  ⚠️ Add 'story_key: yourkey' to _config.yml to enable encryption")
+        print(f"  ❌ {len(protected_stories)} story/stories are marked protected but "
+              f"no story_key is set in _config.yml.")
+        print("     Add 'story_key: yourkey' to _config.yml, or remove the 'protected' "
+              "flag from those stories. Refusing to publish protected content as plaintext.")
+        print("     Hay historias marcadas como protegidas, pero no hay "
+              "story_key en _config.yml.")
+        print("     Agrega 'story_key: tuclave' a _config.yml, o quita la marca "
+              "'protected' de esas historias.")
+        raise SystemExit(PROTECTED_PREREQUISITE_EXIT)
+
+    # Prerequisite 2: the build workflow must run the post-build encrypt step.
+    workflow = Path(workflow_path) if workflow_path else BUILD_WORKFLOW_PATH
+    workflow_text = ''
+    if workflow.exists():
+        try:
+            workflow_text = workflow.read_text(encoding='utf-8')
+        except Exception as e:
+            print(f"  [WARN] Could not read {workflow}: {e}")
+
+    if ENCRYPT_SCRIPT_MARKER not in workflow_text:
+        print(f"  ❌ {len(protected_stories)} story/stories are marked protected, but "
+              f"{workflow} does not run scripts/{ENCRYPT_SCRIPT_MARKER}.")
+        print("     Your build workflow predates build-time story encryption, so "
+              "protected stories would be published as plaintext.")
+        print("     Update .github/workflows/build.yml as described in the upgrade "
+              "notes, or remove the 'protected' flag from those stories.")
+        print(f"     Hay historias protegidas, pero {workflow} no ejecuta "
+              f"scripts/{ENCRYPT_SCRIPT_MARKER}.")
+        print("     Actualiza .github/workflows/build.yml según las notas de "
+              "actualización, o quita la marca 'protected' de esas historias.")
+        raise SystemExit(PROTECTED_PREREQUISITE_EXIT)
+
+    print(f"{len(protected_stories)} protected story/stories will be encrypted "
+          "after the Jekyll build.")
+
+
+def _report_refusals(refusals):
+    """Print each sheet the build stops on once, to stderr, where the upgrade
+    reads it.
+
+    A refused glossary is reported by every story that reads it, so the
+    list is folded by source.
+    """
+    seen = {}
+    for source, message in refusals:
+        seen.setdefault(source, message)
+    print("", file=sys.stderr)
+    for source, message in seen.items():
+        print(f"❌ {source}: {message}", file=sys.stderr)
+
+
+def _generate_audio_manifest(data_dir):
+    """Generate _data/audio_objects.json from objects.json and local audio files.
+
+    Scans telar-content/objects/ for audio files matching object IDs in
+    objects.json, then writes a simple {object_id: extension} manifest.
+    This manifest is consumed by story.html to inject window.audioObjects,
+    which the JS card-type detector needs to distinguish audio objects from
+    IIIF objects.
+
+    Runs as part of the normal csv_to_json pipeline — no external tools
+    required (unlike process_audio.py which needs audiowaveform for peak
+    generation).
+    """
+    objects_json = data_dir / 'objects.json'
+    if not objects_json.exists():
         return
 
-    print(f"Encrypting {len(protected_stories)} protected story/stories...")
+    with open(objects_json, 'r', encoding='utf-8') as f:
+        objects = json.load(f)
 
-    for story_id in protected_stories:
-        # Story JSON filename matches story_id or CSV filename
-        story_json = data_dir / f"{story_id}.json"
+    objects_dir = Path('telar-content/objects')
+    if not objects_dir.exists():
+        return
 
-        if not story_json.exists():
-            print(f"  ⚠️ Story JSON not found: {story_json}")
+    manifest = {}
+    for obj in objects:
+        object_id = obj.get('object_id', '').strip()
+        if not object_id:
             continue
+        for ext in AUDIO_EXTENSIONS:
+            if (objects_dir / f'{object_id}{ext}').exists():
+                manifest[object_id] = ext.lstrip('.')
+                break
 
-        try:
-            # Read story data
-            with open(story_json, 'r', encoding='utf-8') as f:
-                story_data = json.load(f)
+    manifest_path = data_dir / 'audio_objects.json'
+    if manifest:
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2)
+        print(f"  [INFO] Audio manifest: {len(manifest)} audio object(s) → {manifest_path}")
+    elif manifest_path.exists():
+        # No audio objects — remove stale manifest
+        manifest_path.unlink()
+        print(f"  [INFO] No audio objects found — removed stale {manifest_path}")
 
-            # Encrypt story
-            encrypted = encrypt_story(story_data, story_key)
 
-            # Write encrypted data back
-            with open(story_json, 'w', encoding='utf-8') as f:
-                json.dump(encrypted, f, indent=2, ensure_ascii=False)
+def _cleanup_stale_data_files(data_dir, structures_dir, demo_bundle):
+    """Remove _data/*.json files whose source CSV or demo story doesn't exist.
 
-            print(f"  🔒 Encrypted {story_json.name}")
+    Every JSON file this pipeline writes to _data/ falls into one of three
+    buckets: the fixed non-story files (project.json, objects.json,
+    audio_objects.json, glossary_site_kinds.json — each rewritten on every
+    run — and demo-glossary.json, which only a bundle with a glossary
+    writes, so it is removed here when there is none), one file per source CSV in
+    telar-content/spreadsheets/ (stem + '.json'), or one file per story_id
+    in the fetched demo bundle. A file whose identifier is in none of these
+    buckets has nothing left to regenerate it. This runs after CSV
+    conversion and demo merging so it sees the current source set, and
+    deletes anything in _data/ that matches neither bucket.
 
-        except Exception as e:
-            print(f"  ❌ Failed to encrypt {story_json.name}: {e}")
+    Args:
+        data_dir: Path to _data directory.
+        structures_dir: Path to telar-content/spreadsheets (source CSVs).
+        demo_bundle: Loaded demo bundle dict, or None if demo content is
+            disabled/unavailable.
+    """
+    non_story_files = {
+        'project.json', 'objects.json', 'audio_objects.json', 'demo-glossary.json',
+        'glossary_site_kinds.json',
+    }
+
+    demo_glossary = data_dir / 'demo-glossary.json'
+    if demo_glossary.exists() and not (demo_bundle and demo_bundle.get('glossary')):
+        demo_glossary.unlink()
+        print(f"  [INFO] Removed stale _data/{demo_glossary.name} (no demo glossary)")
+
+    expected_stems = {csv_file.stem for csv_file in structures_dir.glob('*.csv')}
+    if demo_bundle:
+        expected_stems.update(demo_bundle.get('stories', {}).keys())
+
+    removed = []
+    for json_file in sorted(data_dir.glob('*.json')):
+        if json_file.name in non_story_files:
+            continue
+        if json_file.stem in expected_stems:
+            continue
+        json_file.unlink()
+        removed.append(json_file.name)
+        print(f"  [INFO] Removed stale _data/{json_file.name} (no matching CSV or demo story)")
+
+    if removed:
+        print(f"✓ Cleaned up {len(removed)} old story data file(s)")
 
 
 def main():
     """Main conversion process."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Convert Telar CSV files to JSON for Jekyll'
+    )
+    parser.add_argument(
+        '--story',
+        default=None,
+        help='Story ID (CSV stem) to process; skips all other story CSVs (system CSVs always processed)'
+    )
+    args = parser.parse_args()
+
     # Fetch demo content FIRST (before any CSV processing)
     fetch_demo_content_if_enabled()
 
@@ -261,56 +475,78 @@ def main():
     print("Converting CSV files to JSON...")
     print("-" * 50)
 
+    refusals = []
+    failures = []
+
     # Convert project setup (with bilingual fallback: project.csv or proyecto.csv)
     project_path = find_csv_with_fallback('telar-content/spreadsheets/project', 'proyecto')
     csv_to_json(
         project_path,
         '_data/project.json',
-        process_project_setup
+        process_project_setup,
+        refusals=refusals,
+        failures=failures
     )
 
     # Convert objects (with bilingual fallback: objects.csv or objetos.csv)
     objects_path = find_csv_with_fallback('telar-content/spreadsheets/objects', 'objetos')
-    if christmas_tree_mode:
-        csv_to_json(
-            objects_path,
-            '_data/objects.json',
-            lambda df: process_objects(df, christmas_tree=True)
-        )
-    else:
-        csv_to_json(
-            objects_path,
-            '_data/objects.json',
-            process_objects
-        )
+    process_objects_func = (
+        (lambda df: process_objects(df, christmas_tree=True)) if christmas_tree_mode
+        else process_objects
+    )
+    objects_ok = csv_to_json(
+        objects_path,
+        '_data/objects.json',
+        process_objects_func,
+        canonical_fields=OBJECT_FIELDS,
+        refusals=refusals,
+        failures=failures
+    )
 
-    # Generate search data for gallery filtering (if enabled in config)
-    generate_search_data()
+    # The audio manifest and search index both read _data/objects.json. If the
+    # objects conversion was skipped or failed, that file is missing or stale, so
+    # skip the downstream steps rather than build them from out-of-date data.
+    if objects_ok:
+        # Generate audio_objects.json manifest for client-side audio detection.
+        # Maps object_id → file extension (e.g. {"cusb-cyl11337d": "mp3"}).
+        # Without this file, story.html cannot inject window.audioObjects and
+        # the JS card-type detector falls through to IIIF for audio objects.
+        _generate_audio_manifest(data_dir)
+
+        # Generate search data for gallery filtering (if enabled in config)
+        generate_search_data()
+    else:
+        print("⚠️  Skipping audio manifest and search data: objects conversion did not succeed.")
 
     # Convert story files (with optional Christmas Tree mode)
     # v0.6.0+: Process ALL CSVs except system files
     system_csvs = {'project.csv', 'proyecto.csv', 'objects.csv', 'objetos.csv'}
+    # The glossary sheet the glossary readers take is read here with the
+    # glossary's aliases too, so its bilingual second header row is judged
+    # as they judge it (telar.glossary.read_glossary_sheet).
+    glossary_sheet = Path(find_csv_with_fallback(str(structures_dir / 'glossary'), 'glosario'))
 
-    if christmas_tree_mode:
-        for csv_file in structures_dir.glob('*.csv'):
-            if csv_file.name not in system_csvs:
-                json_filename = csv_file.stem + '.json'
-                json_file = data_dir / json_filename
-                csv_to_json(
-                    str(csv_file),
-                    str(json_file),
-                    lambda df: process_story(df, christmas_tree=True)
-                )
-    else:
-        for csv_file in structures_dir.glob('*.csv'):
-            if csv_file.name not in system_csvs:
-                json_filename = csv_file.stem + '.json'
-                json_file = data_dir / json_filename
-                csv_to_json(
-                    str(csv_file),
-                    str(json_file),
-                    process_story
-                )
+    for csv_file in structures_dir.glob('*.csv'):
+        if csv_file.name not in system_csvs:
+            # --story flag: skip all story CSVs except the requested one
+            if args.story and csv_file.stem != args.story:
+                continue
+            json_filename = csv_file.stem + '.json'
+            json_file = data_dir / json_filename
+            # The story's name is bound per file rather than closed over:
+            # the loop variable would otherwise reach every call as
+            # whichever CSV the glob ended on.
+            csv_to_json(
+                str(csv_file),
+                str(json_file),
+                lambda df, name=csv_file.stem: process_story(
+                    df,
+                    christmas_tree=christmas_tree_mode,
+                    story_name=name
+                ),
+                refusals=refusals,
+                sheet_aliases=(GLOSSARY_COLUMN_ALIASES if csv_file == glossary_sheet else None)
+            )
 
     # Merge demo content if available
     print("-" * 50)
@@ -319,9 +555,27 @@ def main():
         print("Merging demo content...")
         merge_demo_content(demo_bundle)
 
-    # Encrypt protected stories (v0.8.0+)
+    # Remove _data/*.json files left behind by renamed/removed CSVs or a
+    # changed demo bundle (language switch, version bump, disabled demo)
+    _cleanup_stale_data_files(data_dir, structures_dir, demo_bundle)
+
+    # Protected stories: check the post-build encrypt step can actually run
+    # (encryption itself happens in scripts/encrypt_protected_stories.py)
+    # A refusal outranks the protected check, but both are printed: the
+    # author has two things to fix, and learning the second only after
+    # fixing the first costs a build.
     print("-" * 50)
-    _encrypt_protected_stories(data_dir)
+    protected_exit = None
+    try:
+        _check_protected_prerequisites(data_dir)
+    except SystemExit as e:
+        protected_exit = e
+
+    if refusals or failures:
+        _report_refusals(refusals + failures)
+        raise SystemExit(SHEET_REFUSED_EXIT)
+    if protected_exit is not None:
+        raise protected_exit
 
     print("-" * 50)
     print("Conversion complete!")

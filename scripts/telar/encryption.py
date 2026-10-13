@@ -6,14 +6,22 @@ AES-GCM. Protected stories are encrypted at build time; the browser
 decrypts them at runtime using the Web Crypto API.
 
 The encryption uses:
-- PBKDF2 with 100,000 iterations for key derivation
+- PBKDF2 with 210,000 iterations for key derivation
 - AES-256-GCM for authenticated encryption
 - Random salt (16 bytes) and IV (12 bytes) per story
 
 The encrypted format stores salt and IV alongside the ciphertext so the
 browser can derive the same key and decrypt the content.
 
-Version: v0.8.0-beta
+Security model:
+    This provides a deterrent against casual access (the step data is not
+    readable in plain text from the page source), not confidentiality. On a
+    public site, the source CSV remains in the published output and is
+    publicly accessible. The salt, IV, and ciphertext are all embedded in
+    the page HTML, making offline attacks feasible. For genuine
+    confidentiality, the repository must be private.
+
+Version: v1.8.0
 """
 
 import base64
@@ -25,8 +33,11 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 
 
-# PBKDF2 iterations — must match the JavaScript decryption code
-PBKDF2_ITERATIONS = 100000
+# PBKDF2 iterations — must match the JavaScript decryption code.
+# 210,000 is the OWASP minimum for PBKDF2-HMAC-SHA256. Protected stories are
+# re-encrypted from plaintext on every build, so raising this stays consistent
+# with the matching JS constant without affecting any prior build.
+PBKDF2_ITERATIONS = 210000
 
 
 def derive_key(password: str, salt: bytes) -> bytes:
@@ -49,13 +60,18 @@ def derive_key(password: str, salt: bytes) -> bytes:
     return kdf.derive(password.encode('utf-8'))
 
 
-def encrypt_story(story_data: list, story_key: str) -> dict:
+def encrypt_story(story_data, story_key: str, aad: str = None) -> dict:
     """
     Encrypt story JSON data using AES-GCM.
 
     Args:
-        story_data: List of story steps (the full story JSON)
+        story_data: JSON-serializable story payload — the envelope dict of
+            {"steps": [...], "html": "..."} for protected stories.
         story_key: User-provided encryption key from _config.yml
+        aad: Optional additional authenticated data (the story identifier),
+            binding the ciphertext to its story so an envelope cannot be
+            replayed onto a different story page. The JS decrypt call must
+            pass the same value.
 
     Returns:
         dict with encrypted format:
@@ -76,7 +92,7 @@ def encrypt_story(story_data: list, story_key: str) -> dict:
     # Encrypt story data
     aesgcm = AESGCM(key)
     plaintext = json.dumps(story_data, ensure_ascii=False).encode('utf-8')
-    ciphertext = aesgcm.encrypt(iv, plaintext, None)
+    ciphertext = aesgcm.encrypt(iv, plaintext, aad.encode('utf-8') if aad else None)
 
     # Return encrypted format
     return {
@@ -85,6 +101,39 @@ def encrypt_story(story_data: list, story_key: str) -> dict:
         'iv': base64.b64encode(iv).decode('ascii'),
         'ciphertext': base64.b64encode(ciphertext).decode('ascii')
     }
+
+
+def story_identifier(story: dict) -> str:
+    """
+    The identifier one story record is known by, or None if it has neither.
+
+    Resolved as generate_collections names the story data file: story_id if
+    present, otherwise the "story-{number}" fallback. The bare number would
+    name "{number}.json" while the real file is "story-{number}.json", and a
+    protected story without a semantic story_id would be left unencrypted.
+    One function so the rule cannot differ between the callers that need it.
+
+    Args:
+        story: One story record from project.json
+
+    Returns:
+        Story identifier string, or None when the record has neither a
+        story_id nor a number
+    """
+    story_id = story.get('story_id')
+    if story_id:
+        return str(story_id)
+    if story.get('number') not in (None, ''):
+        return f"story-{story.get('number')}"
+    return None
+
+
+def _iter_stories(project_data: list):
+    """Yield every story record in project.json."""
+    for item in project_data:
+        if 'stories' in item:
+            for story in item['stories']:
+                yield story
 
 
 def get_protected_stories(project_data: list) -> set:
@@ -98,16 +147,10 @@ def get_protected_stories(project_data: list) -> set:
         Set of story identifiers (story_id or story number) that are protected
     """
     protected = set()
-
-    for item in project_data:
-        if 'stories' in item:
-            for story in item['stories']:
-                if story.get('protected'):
-                    # Use story_id if available, otherwise use number
-                    story_id = story.get('story_id') or story.get('number')
-                    if story_id:
-                        protected.add(str(story_id))
-
+    for story in _iter_stories(project_data):
+        identifier = story_identifier(story)
+        if identifier and story.get('protected'):
+            protected.add(identifier)
     return protected
 
 

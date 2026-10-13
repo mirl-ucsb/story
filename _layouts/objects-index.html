@@ -2,6 +2,32 @@
 layout: default
 ---
 
+{%- comment -%}
+  Objects index — the landing page for a site's collection of objects, the
+  catalogue that sits alongside the narrative chapters. It renders the page's
+  own prose content first, then a gallery of every object Jekyll has gathered
+  into the `site.objects` collection.
+
+  Two presentations are possible, chosen by the `collection_interface.browse_and_search`
+  config flag. When enabled (the default), objects appear in a filterable layout:
+  a sidebar offers a Lunr-powered text search plus faceted filters (media type,
+  medium/genre, creator, period, subjects), and a header exposes sort controls
+  and a live "showing N of M" count. The faceted options and counts are filled
+  in at runtime by objects-filter.js, which reads the `data-*` attributes stamped
+  onto each grid item. When disabled, the same objects render as a plain grid
+  with no controls.
+
+  Either way, non-demo objects sort ahead of demo objects (each group alphabetical)
+  so a real collection is never buried beneath sample content. Thumbnails follow a
+  cascade: explicit thumbnail, then IIIF Image API derivative, then a placeholder
+  that the inline script later fills by fetching info.json or a IIIF Presentation
+  manifest — Lunr (lunr.min.js) is the small client-side search index that powers
+  the search box. The template also surfaces a warning banner when any object
+  carries an `object_warning`, flagging configuration problems before they break
+  the object's own page. All user-facing strings come from the active language
+  file via `lang`, falling back to English.
+{%- endcomment -%}
+
 {% if site.telar_language and site.data.languages[site.telar_language] %}
   {% assign lang = site.data.languages[site.telar_language] %}
 {% else %}
@@ -11,7 +37,7 @@ layout: default
 <div class="container my-5">
   <div class="row">
     <div class="col-12">
-      <h1>{{ page.title }}</h1>
+      <h1>{{ lang.pages.objects_heading | default: page.title }}</h1>
     </div>
     <div class="col-12">
         <article class="page-content">
@@ -37,12 +63,12 @@ layout: default
     {% endif %}
   {% endfor %}
 
-  {% if objects_with_warnings.size > 0 %}
+  {% if objects_with_warnings.size > 0 and site['development-features'].hide_warnings != true %}
   <div class="row mb-4">
     <div class="col-12">
       <div class="alert alert-warning" role="alert" style="max-width: 800px;">
-        <strong>⚠️ Configuration Issues Detected</strong>
-        <p class="mb-2 mt-2"><small>The following objects have configuration issues:</small></p>
+        <strong>{{ lang.errors.config_issues_heading }}</strong>
+        <p class="mb-2 mt-2"><small>{{ lang.errors.objects_config_issues }}</small></p>
         <ul class="mb-2" style="font-size: 0.9rem;">
         {% assign shown_warnings = "" | split: "" %}
         {% for object in objects_with_warnings %}
@@ -74,15 +100,20 @@ layout: default
           </li>
         {% endfor %}
         </ul>
-        <p class="mb-0"><small>These objects will fail to load in the viewer.</small></p>
+        <p class="mb-0"><small>{{ lang.errors.objects_will_fail }}</small></p>
       </div>
     </div>
   </div>
   {% endif %}
 
+  {%- comment -%}Sort objects: non-demo first, then demo, alphabetically within each group{%- endcomment -%}
+  {%- assign non_demo_objects = site.objects | where_exp: "obj", "obj.demo != true" | sort: "title" -%}
+  {%- assign demo_objects = site.objects | where_exp: "obj", "obj.demo == true" | sort: "title" -%}
+  {%- assign sorted_objects = non_demo_objects | concat: demo_objects %}
+
   {% if browse_and_search %}
   {% comment %}Browse and Search Layout Container{% endcomment %}
-  <div class="objects-layout">
+  <div class="objects-layout" data-no-options="{{ lang.objects.no_options | escape }}">
     {% comment %}Sidebar (desktop) / Top controls (mobile){% endcomment %}
     <aside class="objects-sidebar">
       {% comment %}Search input (always visible){% endcomment %}
@@ -113,10 +144,21 @@ layout: default
         <div class="objects-filters-content" id="objects-filters-content">
           <h3 class="objects-filter-heading">{{ lang.objects.filter_by | default: "Filter by" }}</h3>
 
-          {% comment %}Type filter{% endcomment %}
-          <div class="objects-filter-section" data-filter="object_type">
+          {% comment %}Media type filter (auto-detected: Image/Video/Audio){% endcomment %}
+          <div class="objects-filter-section" data-filter="media_type">
             <button type="button" class="objects-filter-section-toggle" aria-expanded="false">
               <span>{{ lang.objects.type | default: "Type" }}</span>
+              <span class="objects-filter-indicator">+</span>
+            </button>
+            <div class="objects-filter-options">
+              {% comment %}Options populated by JavaScript{% endcomment %}
+            </div>
+          </div>
+
+          {% comment %}Medium/Genre filter (user-authored){% endcomment %}
+          <div class="objects-filter-section" data-filter="medium">
+            <button type="button" class="objects-filter-section-toggle" aria-expanded="false">
+              <span>{{ lang.objects.medium | default: "Medium/Genre" }}</span>
               <span class="objects-filter-indicator">+</span>
             </button>
             <div class="objects-filter-options">
@@ -188,92 +230,18 @@ layout: default
       </div>
 
       <div class="collection-grid">
-    {% comment %}Sort objects: non-demo first, then demo, alphabetically within each group{% endcomment %}
-    {% assign non_demo_objects = site.objects | where_exp: "obj", "obj.demo != true" | sort: "title" %}
-    {% assign demo_objects = site.objects | where_exp: "obj", "obj.demo == true" | sort: "title" %}
-    {% assign sorted_objects = non_demo_objects | concat: demo_objects %}
     {% for object in sorted_objects %}
-    <a href="{{ object.url | relative_url }}" class="collection-item{% if object.demo %} demo-object{% endif %}" data-object-id="{{ object.object_id }}"{% if browse_and_search %} data-object-type="{{ object.object_type }}" data-creator="{{ object.creator }}" data-period="{{ object.period }}" data-subjects="{{ object.subjects }}" data-year="{{ object.year }}" data-title="{{ object.title }}" data-description="{{ object.description }}"{% endif %}>
-      {% if object.demo %}
-      <span class="demo-badge">{{ lang.demo.badge }}</span>
-      {% endif %}
-      <div class="collection-item-image" {% if object.iiif_manifest and object.iiif_manifest != "" %}data-iiif-manifest="{{ object.iiif_manifest }}"{% endif %}>
-        {% if object.thumbnail and object.thumbnail != "" %}
-        {%- comment -%}Use explicit thumbnail if provided{%- endcomment -%}
-        <img src="{{ object.thumbnail | relative_url }}" alt="{{ object.title }}">
-        {% elsif object.iiif_manifest and object.iiif_manifest contains 'info.json' %}
-        {%- comment -%}For IIIF Image API, use standard thumbnail pattern{%- endcomment -%}
-        <img src="{{ object.iiif_manifest | replace: 'info.json', 'full/!400,400/0/default.jpg' }}" alt="{{ object.title }}" class="iiif-thumbnail">
-        {% elsif object.iiif_manifest and object.iiif_manifest != "" %}
-        {%- comment -%}For IIIF manifests, JavaScript will load thumbnail{%- endcomment -%}
-        <div class="manifest-thumbnail-placeholder bg-light d-flex align-items-center justify-content-center" style="height: 250px;">
-          <span class="text-muted">Loading...</span>
-        </div>
-        {% elsif object.object_id %}
-        {%- comment -%}For local objects, load thumbnail via info.json{%- endcomment -%}
-        <div class="local-iiif-thumbnail" data-info-json="{{ '/iiif/objects/' | append: object.object_id | append: '/info.json' | relative_url }}">
-          <div class="manifest-thumbnail-placeholder bg-light d-flex align-items-center justify-content-center" style="height: 250px;">
-            <span class="text-muted">Loading...</span>
-          </div>
-        </div>
-        {% else %}
-        <div class="placeholder-image bg-secondary d-flex align-items-center justify-content-center" style="height: 250px;">
-          <span class="text-white">No image</span>
-        </div>
-        {% endif %}
-      </div>
-      <h3>{{ object.title }}</h3>
-      {% if object.period %}
-      <p class="text-muted mb-0">{{ object.period }}</p>
-      {% endif %}
-      {% if object.creator %}
-      <p class="text-muted mb-0">{{ object.creator }}</p>
-      {% endif %}
-    </a>
+    {% include object-grid-item.html object=object lang=lang show_filters=true %}
     {% endfor %}
       </div>
+      <p class="objects-no-results" id="objects-no-results" role="status" hidden>{{ lang.objects.no_results }}</p>
     </div>
   </div>
   {% else %}
   {% comment %}Simple grid without browse/search{% endcomment %}
   <div class="collection-grid">
-    {% assign non_demo_objects = site.objects | where_exp: "obj", "obj.demo != true" | sort: "title" %}
-    {% assign demo_objects = site.objects | where_exp: "obj", "obj.demo == true" | sort: "title" %}
-    {% assign sorted_objects = non_demo_objects | concat: demo_objects %}
     {% for object in sorted_objects %}
-    <a href="{{ object.url | relative_url }}" class="collection-item{% if object.demo %} demo-object{% endif %}" data-object-id="{{ object.object_id }}">
-      {% if object.demo %}
-      <span class="demo-badge">{{ lang.demo.badge }}</span>
-      {% endif %}
-      <div class="collection-item-image" {% if object.iiif_manifest and object.iiif_manifest != "" %}data-iiif-manifest="{{ object.iiif_manifest }}"{% endif %}>
-        {% if object.thumbnail and object.thumbnail != "" %}
-        <img src="{{ object.thumbnail | relative_url }}" alt="{{ object.title }}">
-        {% elsif object.iiif_manifest and object.iiif_manifest contains 'info.json' %}
-        <img src="{{ object.iiif_manifest | replace: 'info.json', 'full/!400,400/0/default.jpg' }}" alt="{{ object.title }}" class="iiif-thumbnail">
-        {% elsif object.iiif_manifest and object.iiif_manifest != "" %}
-        <div class="manifest-thumbnail-placeholder bg-light d-flex align-items-center justify-content-center" style="height: 250px;">
-          <span class="text-muted">Loading...</span>
-        </div>
-        {% elsif object.object_id %}
-        <div class="local-iiif-thumbnail" data-info-json="{{ '/iiif/objects/' | append: object.object_id | append: '/info.json' | relative_url }}">
-          <div class="manifest-thumbnail-placeholder bg-light d-flex align-items-center justify-content-center" style="height: 250px;">
-            <span class="text-muted">Loading...</span>
-          </div>
-        </div>
-        {% else %}
-        <div class="placeholder-image bg-secondary d-flex align-items-center justify-content-center" style="height: 250px;">
-          <span class="text-white">No image</span>
-        </div>
-        {% endif %}
-      </div>
-      <h3>{{ object.title }}</h3>
-      {% if object.period %}
-      <p class="text-muted mb-0">{{ object.period }}</p>
-      {% endif %}
-      {% if object.creator %}
-      <p class="text-muted mb-0">{{ object.creator }}</p>
-      {% endif %}
-    </a>
+    {% include object-grid-item.html object=object lang=lang %}
     {% endfor %}
   </div>
   {% endif %}
@@ -281,12 +249,13 @@ layout: default
   {%- comment -%}Only show "no objects" message if collections aren't intentionally skipped{%- endcomment -%}
   {% assign dev_features = site['development-features'] %}
   {%- comment -%}Support both new name (skip_collections) and legacy name (hide_collections){%- endcomment -%}
+  {%- comment -%}This alias is also computed in _includes/header.html and _layouts/index.html — one line each, not worth an include{%- endcomment -%}
   {% assign skip_collections = dev_features.skip_collections | default: dev_features.hide_collections | default: false %}
   {% unless skip_collections %}
   <div class="row">
     <div class="col-12">
       <div class="alert alert-info">
-        <p class="mb-0">No objects in the collection yet. Add object files to the <code>_objects/</code> directory to populate the collection.</p>
+        <p class="mb-0">{{ lang.empty_states.no_objects }}</p>
       </div>
     </div>
   </div>
@@ -294,193 +263,20 @@ layout: default
   {% endif %}
 </div>
 
-<script>
-/**
- * Pick a thumbnail size from the IIIF sizes array.
- * Returns the smallest size >= minWidth, or the largest available.
- */
-function pickThumbnailSize(sizes, minWidth) {
-  if (!sizes || sizes.length === 0) return null;
-  minWidth = minWidth || 400;
-  var sorted = sizes.slice().sort(function(a, b) { return a.width - b.width; });
-  for (var i = 0; i < sorted.length; i++) {
-    if (sorted[i].width >= minWidth) return sorted[i];
+{%- comment -%}
+Everything the objects index's JavaScript needs from Liquid, in one JSON
+block read by assets/js/objects-index-page.js (bundled from
+assets/js/iiif-thumbnails/): the two language strings the cards show.
+{%- endcomment -%}
+<script id="telar-objects-index-data" type="application/json">
+{
+  "lang": {
+    "thumbnailLoadError": {{ lang.empty_states.thumbnail_load_error | jsonify }},
+    "noImage": {{ lang.errors.no_image | jsonify }}
   }
-  return sorted[sorted.length - 1];
 }
-
-/**
- * Load thumbnails from IIIF manifests and info.json
- */
-document.addEventListener('DOMContentLoaded', function() {
-  // Handle local IIIF thumbnails from info.json
-  const localItems = document.querySelectorAll('.local-iiif-thumbnail[data-info-json]');
-  localItems.forEach(function(item) {
-    const infoUrl = item.getAttribute('data-info-json');
-
-    fetch(infoUrl)
-      .then(response => response.json())
-      .then(info => {
-        // Get the largest available size from sizes array (first element)
-        const sizes = info.sizes || [];
-        let thumbnailSize = pickThumbnailSize(sizes);
-
-        if (thumbnailSize) {
-          const baseUrl = info.id || info['@id'];
-          // Use base URL directly - it already points to the image service
-          const thumbnailUrl = `${baseUrl}/full/${thumbnailSize.width},${thumbnailSize.height}/0/default.jpg`;
-
-          const img = document.createElement('img');
-          img.src = thumbnailUrl;
-          img.alt = item.closest('.collection-item').querySelector('h3').textContent;
-
-          const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-          if (placeholder) {
-            placeholder.replaceWith(img);
-          }
-        }
-      })
-      .catch(error => {
-        console.error('Error loading IIIF info.json:', infoUrl, error);
-        const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-        if (placeholder) {
-          placeholder.innerHTML = '<span class="text-danger">Failed to load</span>';
-        }
-      });
-  });
-
-  // Handle external IIIF manifest thumbnails
-  const items = document.querySelectorAll('.collection-item-image[data-iiif-manifest]');
-
-  items.forEach(function(item) {
-    const manifestUrl = item.getAttribute('data-iiif-manifest');
-
-    // Skip if it's an Image API info.json (handled in template)
-    if (manifestUrl.includes('info.json')) {
-      return;
-    }
-
-    // Fetch manifest to extract larger canvas image
-    fetch(manifestUrl)
-      .then(response => response.json())
-      .then(manifest => {
-        let imageServiceUrl = null;
-        let imageServiceProfile = null;
-        let fallbackImageUrl = null;
-
-        // IIIF Presentation API 2.1
-        if (manifest.sequences && manifest.sequences[0] && manifest.sequences[0].canvases) {
-          const firstCanvas = manifest.sequences[0].canvases[0];
-          if (firstCanvas && firstCanvas.images && firstCanvas.images[0]) {
-            const resource = firstCanvas.images[0].resource;
-
-            // Try to get image service for resizing
-            if (resource.service) {
-              const service = Array.isArray(resource.service) ? resource.service[0] : resource.service;
-              imageServiceUrl = service['@id'] || service.id;
-              imageServiceProfile = service.profile;
-            }
-
-            // Fallback to full image URL
-            if (!imageServiceUrl && resource['@id']) {
-              fallbackImageUrl = resource['@id'];
-            }
-          }
-        }
-        // IIIF Presentation API 3.0
-        else if (manifest.items && manifest.items[0]) {
-          const firstCanvas = manifest.items[0];
-          if (firstCanvas.items && firstCanvas.items[0] && firstCanvas.items[0].items) {
-            const annotationBody = firstCanvas.items[0].items[0].body;
-
-            // Try to get image service for resizing
-            if (annotationBody.service && annotationBody.service.length > 0) {
-              imageServiceUrl = annotationBody.service[0].id || annotationBody.service[0]['@id'];
-              imageServiceProfile = annotationBody.service[0].profile;
-            }
-
-            // Fallback to full image URL
-            if (!imageServiceUrl && annotationBody.id) {
-              fallbackImageUrl = annotationBody.id;
-            }
-          }
-        }
-
-        const isLevel0 = imageServiceProfile && (
-          imageServiceProfile === 'level0' ||
-          imageServiceProfile === 'http://iiif.io/api/image/2/level0.json'
-        );
-
-        // Level 0: fetch info.json to get available sizes
-        if (imageServiceUrl && isLevel0) {
-          imageServiceUrl = imageServiceUrl.replace(/\/$/, '');
-          fetch(`${imageServiceUrl}/info.json`)
-            .then(r => r.json())
-            .then(info => {
-              const sizes = info.sizes || [];
-              const largest = sizes.length > 0 ? sizes[sizes.length - 1] : null;
-              let thumbnailUrl = largest
-                ? `${imageServiceUrl}/full/${largest.width},${largest.height}/0/default.jpg`
-                : fallbackImageUrl;
-
-              if (thumbnailUrl) {
-                const img = document.createElement('img');
-                img.src = thumbnailUrl;
-                img.alt = item.closest('.collection-item').querySelector('h3').textContent;
-                img.className = 'iiif-thumbnail';
-                const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-                if (placeholder) placeholder.replaceWith(img);
-              }
-            })
-            .catch(() => {
-              if (fallbackImageUrl) {
-                const img = document.createElement('img');
-                img.src = fallbackImageUrl;
-                img.alt = item.closest('.collection-item').querySelector('h3').textContent;
-                img.className = 'iiif-thumbnail';
-                const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-                if (placeholder) placeholder.replaceWith(img);
-              }
-            });
-        }
-        // Level 1+: request arbitrary size
-        else if (imageServiceUrl) {
-          imageServiceUrl = imageServiceUrl.replace(/\/$/, '');
-          const thumbnailUrl = `${imageServiceUrl}/full/!400,400/0/default.jpg`;
-          const img = document.createElement('img');
-          img.src = thumbnailUrl;
-          img.alt = item.closest('.collection-item').querySelector('h3').textContent;
-          img.className = 'iiif-thumbnail';
-          const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-          if (placeholder) placeholder.replaceWith(img);
-        }
-        // No image service — use fallback directly
-        else if (fallbackImageUrl) {
-          const img = document.createElement('img');
-          img.src = fallbackImageUrl;
-          img.alt = item.closest('.collection-item').querySelector('h3').textContent;
-          img.className = 'iiif-thumbnail';
-          const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-          if (placeholder) placeholder.replaceWith(img);
-        } else {
-          console.warn('No image found in manifest:', manifestUrl);
-          const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-          if (placeholder) {
-            placeholder.innerHTML = '<span class="text-muted">No image</span>';
-          }
-        }
-      })
-      .catch(error => {
-        console.error('Error loading manifest thumbnail:', manifestUrl, error);
-        // Show error placeholder
-        const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-        if (placeholder) {
-          placeholder.innerHTML = '<span class="text-danger">Failed to load</span>';
-        }
-      });
-  });
-});
 </script>
+<script src="{{ '/assets/js/objects-index-page.js' | relative_url }}"></script>
 
 {% if browse_and_search %}
 <script src="{{ '/assets/js/lunr.min.js' | relative_url }}"></script>

@@ -13,16 +13,13 @@
  * - window.storyData: the current story's step data, object references,
  *   and first object identifier.
  *
- * After reading configuration, the module computes viewport-dependent
- * thresholds (scroll distance and swipe distance required to trigger a step
- * change) and then initialises the subsystems: object index, manifest
- * prefetching, first viewer card, navigation, panels, scroll lock, and
- * credits.
- *
  * Navigation mode is chosen automatically based on how the page is being
- * viewed. Embed mode (inside an iframe, detected by embed.js) and mobile
- * viewports (narrower than 768 px) both use button navigation. Desktop
- * viewports use scroll-based navigation with keyboard and touch support.
+ * viewed:
+ * - Embed mode (inside an iframe, detected by embed.js): button navigation.
+ * - Vertical viewport (matchMedia-derived, see layout-mode.js): button navigation.
+ * - iPhone or iPad (see ios-device.js): button navigation, because Lenis
+ *   momentum scroll is unreliable on iOS.
+ * - Anything else: Lenis-powered scroll engine.
  *
  * For protected stories (v0.8.0+), initialization waits until the story is
  * unlocked via story-unlock.js. The unlock module fires a 'telar:story-unlocked'
@@ -31,31 +28,38 @@
  * This module also sets up window.TelarStory, which exposes internal state
  * and key functions for debugging in the browser console.
  *
- * @version v0.8.0-beta
+ * @version v1.8.0
  */
 
 import { state } from './state.js';
+import { getLayoutMode, onLayoutChange } from './layout-mode.js';
 import {
   buildObjectsIndex,
-  initializeFirstViewer,
   prefetchStoryManifests,
   initializeCredits,
-  switchToObject,
-  animateViewerToPosition,
   getManifestUrl,
-  createViewerCard,
-  getOrCreateViewerCard,
 } from './viewer.js';
-import {
-  initializeStepController,
-  initializeButtonNavigation,
-} from './navigation.js';
+import { initCardPool, activateCard } from './card-pool.js';
+import { IiifViewer } from './iiif-viewer.js';
+
+// Expose the IIIF wrapper class as a window global so inline scripts in
+// `_layouts/object.html` can construct it without ESM gymnastics. This
+// mirrors the prior `window.Tify = Tify` precedent that lived in the
+// layout itself. The `typeof window` guard keeps
+// the module safe under jsdom test imports.
+if (typeof window !== 'undefined') {
+  window.IiifViewer = IiifViewer;
+}
+import { initializeButtonNavigation } from './navigation.js';
+import { isIOSDevice } from './ios-device.js';
+import { initScrollEngine, getScrollEngineState } from './scroll-engine.js';
 import {
   initializePanels,
   initializeScrollLock,
   openPanel,
   closeAllPanels,
 } from './panels.js';
+import { applyDeepLinkOnLoad, handleHashChange, navigateToStep, navigateToIntro } from './deep-link.js';
 
 // ── Initialisation ───────────────────────────────────────────────────────────
 
@@ -66,36 +70,123 @@ import {
  */
 function initializeStory() {
   // Read viewer preloading config from _config.yml (via window.telarConfig)
-  const viewerConfig = window.telarConfig?.viewer_preloading || {};
-  state.config.maxViewerCards = Math.min(viewerConfig.max_viewer_cards || 10, 15);
-  state.config.preloadSteps = Math.min(viewerConfig.preload_steps || 6, state.config.maxViewerCards - 2);
-  state.config.loadingThreshold = viewerConfig.loading_threshold || 5;
-  state.config.minReadyViewers = Math.min(viewerConfig.min_ready_viewers || 3, state.config.preloadSteps);
-
-  // Compute viewport-dependent thresholds
-  state.scrollThreshold = window.innerHeight * 0.5;  // 50vh
-  state.touchThreshold = window.innerHeight * 0.2;   // 20vh
+  // Note: story.html always sets window.telarConfig with viewer_preloading
+  // populated for all four keys, each defaulted via Liquid (see
+  // _layouts/story.html) — so none of the four reads below can ever see
+  // undefined. window.telarConfig itself is set earlier in the same
+  // document, and this bundle is only ever loaded by story.html (object
+  // pages deliberately skip it — see _layouts/object.html), so the object
+  // itself is never missing either. The authoritative defaults (8, 6, 5, 3)
+  // live in story.html, not here.
+  const viewerConfig = window.telarConfig.viewer_preloading;
+  state.config.maxViewerCards = Math.min(viewerConfig.max_viewer_cards, 15);
+  state.config.preloadSteps = Math.min(viewerConfig.preload_steps, state.config.maxViewerCards - 2);
+  state.config.loadingThreshold = viewerConfig.loading_threshold;
+  state.config.minReadyViewers = Math.min(viewerConfig.min_ready_viewers, state.config.preloadSteps);
 
   buildObjectsIndex();
 
   // Prefetch manifests in background (async, does not block)
   prefetchStoryManifests();
 
-  initializeFirstViewer();
+  // state.isEmbed is set before the card stack is built, whose first geometry
+  // pass reads it, and so that layout-mode.js callbacks read the correct value.
+  state.isEmbed = window.telarEmbed?.enabled || false;
+
+  // Read card-stack config and initialize the card stack (creates all DOM elements)
+  const cardConfig = {
+    peekHeight: window.telarConfig?.cardPeekHeight ?? 1,
+    messiness: window.telarConfig?.cardMessiness ?? 20,
+  };
+  initCardPool(window.storyData, cardConfig);
 
   // Choose navigation mode
-  state.isMobileViewport = window.innerWidth < 768;
-  const isEmbedMode = window.telarEmbed?.enabled || false;
+  state.layoutMode = getLayoutMode();   // single source of truth — reads CSS vars via layout-mode.js
 
-  if (isEmbedMode) {
-    initializeButtonNavigation('embed');
-  } else if (state.isMobileViewport) {
-    initializeButtonNavigation('mobile');
+  // Refresh state.cardOverlayRect on every layout flip (layout-mode.js has
+  // already updated state.layoutMode). Activation-time rect write lives in card-pool.js.
+  onLayoutChange(() => {
+    const activeCard = document.querySelector('.text-card.is-active');
+    state.cardOverlayRect = activeCard ? activeCard.getBoundingClientRect() : null;
+  });
+
+  if (state.isEmbed) {
+    initializeButtonNavigation();
+    // Also init scroll engine so button nav can use advanceToStep.
+    // In iframes, wheel events are unreliable; the primary input is button
+    // presses via advanceToStep → lenis.scrollTo(). The scroll surface
+    // provides the DOM overflow Lenis needs for scrollTo() to work.
+    const stepCount = (window.storyData?.steps || []).filter(s => !s._metadata).length;
+    initScrollEngine(stepCount);
+  } else if (state.layoutMode === 'vertical') {
+    initializeButtonNavigation();
+  } else if (isIOSDevice()) {
+    initializeButtonNavigation();
   } else {
-    initializeStepController();
+    // Lenis-powered continuous scroll engine. The marker keeps the keyboard
+    // hint on the intro when the window is later narrowed into the vertical
+    // layout, which does not change the navigation.
+    document.documentElement.dataset.navigation = 'scroll';
+    const stepCount = (window.storyData?.steps || []).filter(s => !s._metadata).length;
+    initScrollEngine(stepCount);
   }
 
   initializePanels();
+  applyDeepLinkOnLoad();
+  // Registered once per story load; the engine has no re-init or teardown path.
+  window.addEventListener('hashchange', handleHashChange);
+
+  // Wire up nav button (Back to Home on intro, Back to Start elsewhere)
+  const btnNav = document.getElementById('btn-nav-back');
+  if (btnNav) {
+    btnNav.classList.add('is-home');
+    const homeUrl = btnNav.dataset.homeUrl;
+    const homeText = btnNav.dataset.homeText;
+    const startText = btnNav.dataset.startText;
+    const textEl = btnNav.querySelector('.btn-nav-text');
+
+    // Switch button mode based on current step
+    state.onStepChange = (index) => {
+      if (index < 0) {
+        // On intro — show Back to Home
+        btnNav.classList.remove('is-start');
+        btnNav.classList.add('is-home');
+        btnNav.href = homeUrl;
+        if (textEl) textEl.textContent = homeText;
+      } else {
+        // Past intro — show Back to Start
+        btnNav.classList.remove('is-home');
+        btnNav.classList.add('is-start');
+        btnNav.removeAttribute('href');
+        if (textEl) textEl.textContent = startText;
+      }
+    };
+
+    // The handler is the only thing that puts the button in one mode or the
+    // other, and by the time it exists the story may already be on a step: a
+    // deep link arrives at its step before this point in the sequence. Read
+    // the state once here rather than waiting for a change that a reader who
+    // landed where they meant to may never make.
+    state.onStepChange(state.currentIndex);
+
+    btnNav.addEventListener('click', (e) => {
+      if (btnNav.classList.contains('is-start')) {
+        e.preventDefault();
+        navigateToIntro();
+      }
+      // is-home mode: default <a> link behaviour navigates to home
+    });
+  }
+
+  // Wire up TOC section links on the intro card
+  document.querySelectorAll('.intro-toc-link[data-target-step]').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const step = parseInt(link.dataset.targetStep, 10);
+      if (step) navigateToStep(step);
+    });
+  });
+
   initializeScrollLock();
   initializeCredits();
 }
@@ -117,11 +208,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
 window.TelarStory = {
   state,
-  switchToObject,
-  animateViewerToPosition,
+  activateCard,
   openPanel,
   getManifestUrl,
   closeAllPanels,
-  createViewerCard,
-  getOrCreateViewerCard,
+  getScrollEngineState,
+  navigateToStep,
 };

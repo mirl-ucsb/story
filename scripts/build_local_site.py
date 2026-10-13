@@ -7,7 +7,7 @@ computer. The same pipeline also runs as a GitHub Actions workflow —
 this script and the workflow are two equally valid ways to build a
 Telar site.
 
-The build pipeline has six steps, each handled by a separate script
+The build pipeline has seven steps, each handled by a separate script
 or tool:
 
 1. Fetch Google Sheets data as CSV files (fetch_google_sheets.py)
@@ -15,16 +15,18 @@ or tool:
    links, and demo content (csv_to_json.py / telar package)
 3. Generate Jekyll collection markdown files from JSON
    (generate_collections.py)
-4. Generate IIIF image tiles for self-hosted objects (generate_iiif.py)
-5. Bundle JavaScript modules into story.js (esbuild)
-6. Build or serve the Jekyll site
+4. Process audio objects — generate waveform peak data for audio cards
+   (process_audio.py)
+5. Generate IIIF image tiles for self-hosted objects (generate_iiif.py)
+6. Bundle JavaScript modules into story.js (esbuild)
+7. Build or serve the Jekyll site
 
 Each step can be skipped with flags (--skip-fetch, --skip-iiif,
---build-only) for faster iteration when only some data has changed.
-The default behaviour is to run all steps and start a local Jekyll
-server on port 4001.
+--skip-audio, --build-only) for faster iteration when only some data
+has changed. The default behaviour is to run all steps and start a
+local Jekyll server on port 4001.
 
-Version: v0.9.0-beta
+Version: v1.7.0
 
 Usage:
     python3 scripts/build_local_site.py              # Build and serve on port 4001
@@ -32,6 +34,7 @@ Usage:
     python3 scripts/build_local_site.py --build-only # Build without serving
     python3 scripts/build_local_site.py --skip-iiif  # Skip IIIF tile generation
     python3 scripts/build_local_site.py --skip-fetch # Skip Google Sheets fetch
+    python3 scripts/build_local_site.py --skip-audio # Skip audio processing
 """
 
 import argparse
@@ -40,14 +43,18 @@ import sys
 import yaml
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
 
-def run_command(cmd, description, check=True):
-    """Run a shell command with status output"""
+from telar.build_conflicts import find_conflicts, format_failure  # noqa: E402
+
+
+def _run_command(cmd, description, check, use_shell):
+    """Run a command (shell string or argument list) with status output."""
     print(f"\n{'='*60}")
     print(f"  {description}")
     print(f"{'='*60}\n")
 
-    result = subprocess.run(cmd, shell=True)
+    result = subprocess.run(cmd, shell=use_shell)
 
     if check and result.returncode != 0:
         print(f"\n❌ Error: {description} failed with exit code {result.returncode}")
@@ -56,18 +63,69 @@ def run_command(cmd, description, check=True):
     return result
 
 
-def kill_running_jekyll():
-    """Kill any running Jekyll instances"""
+def run_command(cmd, description, check=True):
+    """Run a shell command with status output"""
+    return _run_command(cmd, description, check, use_shell=True)
+
+
+def run_jekyll_build():
+    """Build the site, then fail on any destination conflict Jekyll found.
+
+    Jekyll reports two files claiming one destination as a warning and exits
+    0, so the page that loses is silently absent — and for a protected story
+    the encryption step can end up writing to a page that is not the story.
+    The output is streamed as it arrives and kept, so the gate can read it.
+    """
+    print(f"\n{'='*60}")
+    print("  Step 7/9: Building Jekyll site")
+    print(f"{'='*60}\n")
+
+    captured = []
+    process = subprocess.Popen(
+        ['bundle', 'exec', 'jekyll', 'build'],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    for line in process.stdout:
+        print(line, end='')
+        captured.append(line)
+    returncode = process.wait()
+    if returncode != 0:
+        print(f"\n❌ Error: Jekyll build failed with exit code {returncode}")
+        sys.exit(returncode)
+
+    conflicts = find_conflicts(''.join(captured))
+    if conflicts:
+        print(f"\n❌ {format_failure(conflicts)}")
+        sys.exit(1)
+    print("\n✓ Step 8/9: No destination conflicts in the Jekyll build.")
+
+
+def run_command_list(cmd, description, check=True):
+    """Run a command given as an argument list (no shell), with status output.
+
+    Preferred over run_command when any part of the command is interpolated
+    (e.g. a base URL from config), so shell metacharacters cannot be injected.
+    """
+    return _run_command(cmd, description, check, use_shell=False)
+
+
+def kill_running_jekyll(port):
+    """Kill a Jekyll instance serving on the given port (this script's server).
+
+    Scoped to the port and using SIGTERM (pkill's default, not -9/SIGKILL) so an
+    unrelated `jekyll serve` on another port is left alone and the targeted
+    server can shut down cleanly.
+    """
+    pattern = f'jekyll serve.*--port {port}'
     result = subprocess.run(
-        'pgrep -f "jekyll serve"',
-        shell=True,
+        ['pgrep', '-f', pattern],
         capture_output=True,
         text=True
     )
     if result.stdout.strip():
-        print("Killing existing Jekyll instances...")
-        subprocess.run('pkill -9 -f "jekyll serve"', shell=True, stderr=subprocess.DEVNULL)
-        print("✓ Killed running Jekyll processes")
+        print(f"Killing existing Jekyll instance on port {port}...")
+        subprocess.run(['pkill', '-f', pattern], stderr=subprocess.DEVNULL)
+        print("✓ Killed running Jekyll process")
 
 
 def main():
@@ -76,13 +134,14 @@ def main():
     parser.add_argument('--port', type=int, default=4001, help='Port for Jekyll server (default: 4001)')
     parser.add_argument('--skip-iiif', action='store_true', help='Skip IIIF tile generation')
     parser.add_argument('--skip-fetch', action='store_true', help='Skip Google Sheets fetch')
+    parser.add_argument('--skip-audio', action='store_true', help='Skip audio processing')
     args = parser.parse_args()
 
     # Serve by default unless --build-only is specified
     serve = not args.build_only
 
     # Kill any running Jekyll instances first
-    kill_running_jekyll()
+    kill_running_jekyll(args.port)
 
     print("\n" + "="*60)
     print("  Telar Local Build")
@@ -100,28 +159,47 @@ def main():
             if gs_enabled:
                 run_command(
                     'python3 scripts/fetch_google_sheets.py',
-                    'Step 1/6: Fetching data from Google Sheets'
+                    'Step 1/9: Fetching data from Google Sheets'
                 )
             else:
-                print("\n✓ Step 1/6: Google Sheets disabled - using existing CSV files")
+                print("\n✓ Step 1/9: Google Sheets disabled - using existing CSV files")
         else:
-            print("\n⚠ Step 1/6: No _config.yml found - skipping Google Sheets fetch")
+            print("\n⚠ Step 1/9: No _config.yml found - skipping Google Sheets fetch")
     else:
-        print("\n✓ Step 1/6: Skipping Google Sheets fetch (--skip-fetch)")
+        print("\n✓ Step 1/9: Skipping Google Sheets fetch (--skip-fetch)")
 
     # Step 2: Convert CSV to JSON
     run_command(
         'python3 scripts/csv_to_json.py',
-        'Step 2/6: Converting CSV to JSON'
+        'Step 2/9: Converting CSV to JSON'
     )
 
     # Step 3: Generate Jekyll collections
     run_command(
         'python3 scripts/generate_collections.py',
-        'Step 3/6: Generating Jekyll collections'
+        'Step 3/9: Generating Jekyll collections'
     )
 
-    # Step 4: Generate IIIF tiles (unless skipped)
+    # Step 4: Process audio objects (unless skipped)
+    if not args.skip_audio:
+        # Check if any audio files exist (skip gracefully if none)
+        audio_extensions = ('.mp3', '.ogg', '.m4a')
+        objects_dir = Path('telar-content/objects')
+        has_audio = objects_dir.exists() and any(
+            f for f in objects_dir.iterdir()
+            if f.suffix.lower() in audio_extensions
+        )
+        if has_audio:
+            run_command(
+                'python3 scripts/process_audio.py --objects-dir telar-content/objects --data-dir _data --output-dir assets/audio',
+                'Step 4/9: Processing audio objects (waveform peaks)'
+            )
+        else:
+            print("\n✓ Step 4/9: No audio objects found - skipping audio processing")
+    else:
+        print("\n✓ Step 4/9: Skipping audio processing (--skip-audio)")
+
+    # Step 5: Generate IIIF tiles (unless skipped)
     if not args.skip_iiif:
         base_url = f"http://127.0.0.1:{args.port}"
 
@@ -134,25 +212,32 @@ def main():
             if baseurl:
                 base_url = f"{base_url}{baseurl}"
 
-        run_command(
-            f'python3 scripts/generate_iiif.py --base-url {base_url}',
-            f'Step 4/6: Generating IIIF tiles (base URL: {base_url})'
+        run_command_list(
+            ['python3', 'scripts/generate_iiif.py', '--base-url', base_url],
+            f'Step 5/9: Generating IIIF tiles (base URL: {base_url})'
         )
     else:
-        print("\n✓ Step 4/6: Skipping IIIF generation (--skip-iiif)")
+        print("\n✓ Step 5/9: Skipping IIIF generation (--skip-iiif)")
 
-    # Step 5: Build JavaScript bundle
+    # Step 6: Build JavaScript bundle
     run_command(
         'npm run build:js',
-        'Step 5/6: Building JavaScript bundle'
+        'Step 6/9: Building JavaScript bundle'
     )
 
-    # Step 6: Build or serve Jekyll
+    # Step 7: Build or serve Jekyll
     if serve:
         print("\n" + "="*60)
-        print(f"  Step 6/6: Starting Jekyll server on port {args.port}")
+        print(f"  Step 7/9: Starting Jekyll server on port {args.port}")
         print("="*60)
         print(f"\n  Site will be available at: http://127.0.0.1:{args.port}/telar/")
+        print("  NOTE: serve mode regenerates _site continuously, so protected")
+        print("  stories are NOT encrypted here (local plaintext only). To test")
+        print("  them, run a build and serve _site with a static server.")
+        print("  Destination conflicts are not gated here either: Jekyll")
+        print("  rebuilds on every change, so a collision would be reported")
+        print("  in this output and then overwritten. Watch for 'Conflict:'")
+        print("  above, or use --build-only, which does gate it.")
         print("  Press Ctrl+C to stop the server\n")
 
         # Run Jekyll serve (this blocks until Ctrl+C)
@@ -162,9 +247,17 @@ def main():
             check=False  # Don't exit on Ctrl+C
         )
     else:
+        run_jekyll_build()
+
+        # Step 8: Encrypt protected stories in the built output. Same gate as
+        # the deploy workflow: a no-op without protected stories, a hard
+        # failure rather than plaintext with them. Serve mode cannot hold
+        # this guarantee (Jekyll regenerates _site continuously), so
+        # protected-story testing uses this build followed by a static
+        # server.
         run_command(
-            'bundle exec jekyll build',
-            'Step 6/6: Building Jekyll site'
+            'python3 scripts/encrypt_protected_stories.py',
+            'Step 9/9: Encrypting protected stories (post-build gate)'
         )
         print("\n" + "="*60)
         print("  Build complete! Site is in _site/")

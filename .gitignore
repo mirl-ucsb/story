@@ -59,3 +59,10 @@ iiif/objects/
 __pycache__/
 *.py[cod]
 *$py.class
+
+!assets/vendor/
+telar-story*.bundle.js
+telar-story-bundle.js
+
+# Story page manifest (generate_collections.py records where each story renders)
+_data/telar-build/
