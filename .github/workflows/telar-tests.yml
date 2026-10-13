@@ -1,55 +1,61 @@
 name: Test Telar Scripts
 #
-# This workflow runs Telar's test suites: Python unit tests for the build
-# pipeline scripts, and JavaScript unit tests for the story page logic.
+# This workflow runs Telar's unit test suites:
 #
-# On push or pull request to main, all test suites run automatically. When
-# triggered manually via workflow_dispatch, you can choose which suites to
-# run using the checkboxes — useful for quick iteration on a specific area.
+# 1. Python unit tests — CSV parsing, column normalisation, widget rendering,
+#    IIIF metadata extraction, glossary linking, and image processing.
 #
-# The Python tests cover the scripts/telar/ package: CSV parsing, column
-# normalisation, widget rendering, IIIF metadata extraction, glossary linking,
-# and image processing. They use pytest with mocked inputs.
+# 2. JavaScript unit tests — coordinate maths, manifest URL resolution,
+#    content detection predicates, and state structure.
 #
-# The JavaScript tests cover the assets/js/telar-story/ modules: coordinate
-# maths, manifest URL resolution, content detection predicates, and state
-# structure. They use Vitest with jsdom for browser API simulation.
+# On pull request to main, all test suites run automatically. When triggered
+# manually via workflow_dispatch, you can choose which suites to run.
 #
-# Both suites are pure logic tests — no running Jekyll server, network access,
-# or real external data is needed.
-#
-# Version: v0.7.0-beta
+# Version: v1.8.0
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
     inputs:
       run_python:
-        description: 'Run Python tests'
+        description: 'Run Python unit tests'
         type: boolean
         default: true
       run_javascript:
-        description: 'Run JavaScript tests'
+        description: 'Run JavaScript unit tests'
         type: boolean
         default: true
 
+# Least-privilege default token: this workflow only reads the checkout to run
+# tests. Fork pull requests already receive a read-only token, but declaring it
+# explicitly keeps the guarantee independent of org/repo defaults.
+permissions:
+  contents: read
+
+# Framework unit tests run only in the Telar repos, not in sites built from
+# this template, and only for the suites selected on manual dispatch.
 jobs:
   python:
     name: Python Unit Tests
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_python }}
+    if: ${{ (github.repository == 'UCSB-AMPLab/telar' || github.repository == 'juancobo/telar') && (github.event_name != 'workflow_dispatch' || inputs.run_python) }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Some tests read files at a release tag (the shipped components README,
+      # the v1.7.0 delivery set). The tags live on the public repository.
+      - name: Fetch the release tags
+        run: git fetch --tags --force https://github.com/UCSB-AMPLab/telar.git
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.13'
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
@@ -63,19 +69,21 @@ jobs:
   javascript:
     name: JavaScript Unit Tests
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_javascript }}
+    if: ${{ (github.repository == 'UCSB-AMPLab/telar' || github.repository == 'juancobo/telar') && (github.event_name != 'workflow_dispatch' || inputs.run_javascript) }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
+      # 22: jsdom 30 needs ^22.22.2 and its undici >=22.19.0, and Node 20 is
+      # past end of life. Every engine range in package-lock.json accepts it.
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run JavaScript unit tests
         run: npm run test:js
