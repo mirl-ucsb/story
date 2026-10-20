@@ -1,5 +1,5 @@
 ---
-title: What is a khipu?
+title: "What is a khipu?"
 ---
 
 The khipu itself is an archive, and record holder, however our records of this khipu's story and the information it holds are both incomplete. We can recover parts of the story through various analyses, identifying the materials, structure and information in its cords and knots. Radiocarbon dating and imaging informs us about other information and experiences of this khipu. Together, these different lines of evidence allow us to reconstruct this khipu’s story about how it served Andean peoples.

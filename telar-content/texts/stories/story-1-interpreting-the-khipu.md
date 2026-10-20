@@ -1,5 +1,5 @@
 ---
-title: Interpreting the Khipu
+title: "Interpreting the Khipu"
 ---
 
 Analysis of the khipu at UCSB identified **97 pendant cords** and **37 subsidiary cords** in **nine clusters**. These nine clusters of cords likely recorded census and tribute information related to different communities, which is suggested by the patterning on the cords within each cluster.

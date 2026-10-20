@@ -1,5 +1,5 @@
 ---
-title: 3D Imaging
+title: "3D Imaging"
 ---
 
 Given its physical complexity, creating a 3D model of this khipu was a process of trial and error. The goal was to preserve as much knot and cord detail as possible, but conventional 3D scanners initially had trouble capturing that much detail on such a small scale. Our scanner had trouble differentiating between the khipu and the board it is mounted on. Essentially, the scanner thinks of the khipu and the board as one object. With other objects, we could flip the object to scan the backside and then merge the models, but because the khipu is mounted to the board, this is not possible here. This means that we can capture a high-quality scan of the exposed side of the khipu, but not the side facing the board.

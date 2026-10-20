@@ -1,5 +1,5 @@
 ---
-title: Readings
+title: "Readings"
 ---
 
 ### Websites, Databases, Online Exhibits 

@@ -2,20 +2,16 @@
 # https://github.com/UCSB-AMPLab/telar
 
 # Site Settings
-title: Haptic khipu
-description: This project investigates a 16th century khipu in UC Santa
-  Barbara's Art, Design & Architecture Museum through material, haptic, and digital
-  imaging methods to explore how Andean recordkeeping systems encode knowledge in
-  fiber and form. A Spanish translation of this project will be available soon.
-url: https://khipu.mirl.arthistory.ucsb.edu
+title: "Haptic khipu"
+description: "This project investigates a 16th century khipu in UC Santa Barbara's Art, Design &amp; Architecture Museum through material, haptic, and digital imaging methods to explore how Andean recordkeeping systems encode knowledge in fiber and form. A Spanish translation of this project will be available soon."
+url: "https://khipu.mirl.arthistory.ucsb.edu"
 baseurl: ""
-author: Alicia Boswell, Alida Jekabson, Izzy Devlin, Jeff O'Brien, María Lumbreras,
-  Juan Cobo Betancourt
-email: jeffobrien@ucsb.edu
-telar_theme: paisajes
-logo: '' # Path to logo image (optional, max 80px tall, 200-300px wide recommended)
-telar_language: en # Options: "en" (English), "es" (Español)
-collection_mode: false # Set to true to show objects first with large thumbnails and stories below with small thumbnails (collection-first homepage)
+author: "Alicia Boswell, Alida Jekabson, Izzy Devlin, Jeff O'Brien, María Lumbreras, Juan Cobo Betancourt"
+email: "jeffobrien@ucsb.edu"
+telar_theme: "paisajes"
+logo: ""
+telar_language: en
+collection_mode: false
 
 # Story Interface Settings
 story_interface:
@@ -161,3 +157,4 @@ development-features:
   # Hides stories section, objects teaser, and /objects/ nav link
   # Use this when building a site with only custom pages (no stories or objects)
   skip_collections: false # (Renamed from hide_collections)
+story_key: ""

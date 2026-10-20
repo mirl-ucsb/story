@@ -1,6 +1,7 @@
 ---
-title: Understanding cords and their materiality
+title: "Understanding cords and their materiality"
 ---
+
 **Primary cord**: The primary cord contains minimal knots, aside from the kayte knot. Hanging from the primary cords are pendant cords, which can be "read" by counting the knots on each cord. Reading from left to right, this knot indicates the "beginning” of the khipu, and might also tell us something about the subject matter recorded by the khipu. 
 
 **Pendant cord**: Hanging from the primary cord are pendant cords. Often pendant cords have additional cords attached to them called subsidiary cords. 
