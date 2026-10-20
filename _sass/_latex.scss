@@ -5,8 +5,14 @@
  * only adjusts what doesn't fit Telar's layout — display math spacing, inline
  * math sizing, and panel overflow handling.
  *
- * @version v0.9.1-beta
+ * @version v1.8.0
  */
+
+// KaTeX adjustments are component-level chrome, so they sit with the other
+// components. KaTeX's own CDN stylesheet is imported into the third-party
+// layer, below this one, so these declarations win on the properties both set
+// (.katex font-size, .katex-display margin) whatever their specificity.
+@layer telar-components {
 
 // Display math: centred with vertical spacing, scroll for wide equations
 .katex-display {
@@ -22,7 +28,4 @@
   display: inline;
 }
 
-// Panel context: constrain wide equations to panel width
-.panel-content .katex-display {
-  max-width: 100%;
-}
+} // end @layer telar-components

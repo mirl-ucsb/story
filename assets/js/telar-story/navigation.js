@@ -2,44 +2,56 @@
  * Telar Story – Navigation
  *
  * This module handles how the user moves between story steps. There are three
- * navigation modes, chosen automatically based on viewport size and embed
+ * navigation modes, chosen automatically based on layout mode and embed
  * status:
  *
- * - Desktop scroll: On viewports 768 px and wider (not embedded), the user
- *   scrolls with a mouse wheel or trackpad. A custom scroll accumulator
- *   collects scroll distance until it crosses a threshold (50 % of viewport
- *   height), then advances or retreats one step. A cooldown prevents rapid
- *   changes during the step transition animation. iPad and tablet users in
- *   this viewport range navigate by swiping vertically.
+ * - Scroll navigation: In horizontal layout (not embedded, not iOS), the
+ *   scroll engine (scroll-engine.js) drives navigation via Lenis smooth
+ *   scroll. Keyboard input is handled by initKeyboardNavigation.
  *
- * - Mobile buttons: On viewports narrower than 768 px, previous/next buttons
- *   appear at the bottom of the screen. Each tap advances one step with a
- *   short cooldown to prevent double-taps.
+ * - Button navigation: In vertical layout, previous/next buttons appear at
+ *   the bottom of the screen. Each tap advances one step with a short
+ *   cooldown to prevent double-taps.
  *
  * - Embed buttons: When the page is loaded inside an iframe (detected by
- *   embed.js), the same button navigation is used regardless of viewport
- *   width, because iframe scroll events do not propagate reliably.
+ *   embed.js), the same button navigation is used regardless of layout
+ *   mode, because iframe scroll events do not propagate reliably.
+ *
+ * The horizontal/vertical layout threshold is not hardcoded here — it lives
+ * in _responsive.scss ($telar-vertical-min-width, $telar-vertical-min-aspect,
+ * $telar-card-landscape-max-height) and is read at runtime by layout-mode.js.
  *
  * Keyboard navigation works in all modes: arrow keys and Page Up/Down move
  * between steps, left/right arrows open and close panels, Space advances
- * (Shift+Space goes back), and Escape closes the current panel.
+ * (Shift+Space goes back), Home goes to the intro and End to the last step,
+ * and Escape closes the current panel. A step key moves the step at once; the
+ * side card never scrolls, so no key is held back for it.
+ *
+ * state.currentIndex is the current step in every mode (-1 on the intro), and
+ * everything that asks which step the reader is on reads it: the fragment,
+ * the layer keys, the nav button. The scroll engine writes it wherever Lenis
+ * runs. Where it does not (vertical layout, iPad), button navigation is the
+ * only thing that moves the story and writes it through recordButtonStep.
+ * state.currentButtonStep is the step the buttons last moved to. In embed
+ * mode every move is the scroll engine's, the buttons' included, and the
+ * buttons show only where the engine is: it hands them each step it puts the
+ * story on (followEngine), so they carry on from wherever a link, a key or the
+ * wheel left the reader, and a move refused or cut short leaves them right.
  *
  * All navigation is blocked when a panel is open (the "panel freeze" system
  * managed by panels.js). This prevents accidental step changes while the
  * user is reading panel content.
  *
- * @version v0.7.0-beta
+ * @version v1.8.0
  */
 
-import { state, STEP_COOLDOWN, MAX_SCROLL_DELTA, MOBILE_NAV_COOLDOWN } from './state.js';
-import {
-  switchToObject,
-  switchToObjectMobile,
-  animateViewerToPosition,
-  preloadNearbyViewers,
-  initializeLoadingShimmer,
-  showViewerSkeletonState,
-} from './viewer.js';
+import { state, BUTTON_NAV_COOLDOWN, moveSeconds } from './state.js';
+import { setMoveSeconds } from './card-height.js';
+import { travelBetween } from './camera-travel.js';
+import { activateCard, releaseTitleCardsForIntro } from './card-pool.js';
+import { advanceToStep, buttonHeading, keyboardNav } from './scroll-engine.js';
+import { writeHash, navigateToIntro, navigateToStep } from './deep-link.js';
+import { initializeLoadingShimmer, showViewerSkeletonState } from './viewer.js';
 import {
   openPanel,
   closeTopPanel,
@@ -47,145 +59,195 @@ import {
   stepHasLayer2Content,
 } from './panels.js';
 
-// ── Desktop scroll navigation ────────────────────────────────────────────────
+// ── Keyboard navigation ────────────────────────────────────────────────────────
 
 /**
- * Set up desktop scroll-based navigation.
+ * Register keyboard event listener for step and panel navigation.
  *
- * Assigns z-index stacking to steps, activates the first step, and registers
- * event listeners for keyboard, wheel, and touch input.
+ * Called by scroll-engine.js after Lenis is initialised, and by
+ * initializeButtonNavigation. Embed mode calls both; the listener is one
+ * function, so the second registration adds nothing. Arrow keys navigate
+ * between steps through the scroll engine wherever Lenis runs, and through
+ * the buttons' own moves where it does not. Panel keys open and close
+ * layers, and Escape closes panels.
  */
-export function initializeStepController() {
-  state.steps = Array.from(document.querySelectorAll('.story-step'));
-
-  initializeLoadingShimmer();
-
-  state.steps.forEach((step, index) => {
-    step.style.zIndex = index + 1;
-    step.dataset.stepIndex = index;
-  });
-
-  if (state.steps.length > 0) {
-    goToStep(0, 'forward');
-  }
-
+export function initKeyboardNavigation() {
   document.addEventListener('keydown', handleKeyboard);
-  window.addEventListener('wheel', handleScroll, { passive: false });
-  window.addEventListener('touchstart', handleTouchStart, { passive: true });
-  window.addEventListener('touchend', handleTouchEnd, { passive: true });
-
-  console.log(`Step controller initialized with ${state.steps.length} steps`);
 }
 
 /**
- * Navigate to a specific step (desktop).
+ * Navigate to a specific step.
  *
- * Handles intro slide transitions, direction-aware CSS class changes,
- * object switching or pan/zoom animation, and viewer preloading.
+ * Delegates all visual transitions to the card stack (activateCard), which
+ * handles viewer plate switching, text card sliding, and preloading based
+ * on whether the object has changed and whether the zoom mode changed.
  *
  * @param {number} newIndex - Target step index.
  * @param {string} [direction='forward'] - 'forward' or 'backward'.
  */
 export function goToStep(newIndex, direction = 'forward') {
-  if (newIndex < 0) {
-    console.log(`Cannot go to step ${newIndex}: already at first step (0)`);
-    return;
-  }
-  if (newIndex >= state.steps.length) {
-    console.log(`Cannot go to step ${newIndex}: already at last step (${state.steps.length - 1})`);
-    return;
-  }
-
-  const oldIndex = state.currentIndex;
-  const newStep = state.steps[newIndex];
-  const oldStep = oldIndex >= 0 ? state.steps[oldIndex] : null;
-
-  console.log(`goToStep: ${oldIndex} → ${newIndex} (${direction})`);
-
-  state.lastStepChangeTime = Date.now();
-
-  // Intro slide transitions
-  if (oldIndex === 0 && newIndex > 0) {
-    const intro = state.steps[0];
-    if (intro.classList.contains('story-intro')) {
-      intro.style.transform = 'translateY(-100%)';
-      intro.style.zIndex = '0';
-    }
-  } else if (newIndex === 0 && oldIndex > 0) {
-    const intro = state.steps[0];
-    if (intro.classList.contains('story-intro')) {
-      intro.style.zIndex = '100'; // Above other steps (1-11) but below fixed buttons (1040)
-      intro.style.transform = 'translateY(0)';
-    }
-    state.currentViewerCard = null;
-    state.currentObject = null;
-  }
-
-  // Deactivate old step when going backward
-  if (direction === 'backward' && oldStep && oldIndex !== 0) {
-    oldStep.classList.remove('is-active');
-  }
+  // Allow -1 for intro restoration on backward navigation
+  if (newIndex < -1 || newIndex >= state.steps.length) return;
 
   state.currentIndex = newIndex;
 
-  const objectId = newStep.dataset.object;
-  const x = parseFloat(newStep.dataset.x);
-  const y = parseFloat(newStep.dataset.y);
-  const zoom = parseFloat(newStep.dataset.zoom);
-  const page = newStep.dataset.page ? parseInt(newStep.dataset.page, 10) : undefined;
-
-  // Determine if we need to switch objects or just pan/zoom
-  const isLeavingIntro = (oldIndex === 0 && newIndex > 0);
-
-  const pageChanged = state.currentViewerCard && state.currentViewerCard.page !== (page || undefined);
-  if (objectId && (!state.currentViewerCard || state.currentViewerCard.objectId !== objectId || isLeavingIntro || pageChanged)) {
-    console.log(`Switching to new object: ${objectId}${isLeavingIntro ? ' (leaving intro)' : ''}${pageChanged ? ` (page changed to ${page})` : ''}`);
-    switchToObject(objectId, newIndex, x, y, zoom, newStep, direction, page);
-    state.currentObject = objectId;
-  } else {
-    console.log(`Same object, activating text and animating viewer`);
-
-    if (direction === 'forward' && state.currentViewerCard) {
-      state.currentViewerCard.element.classList.remove('card-below');
-      state.currentViewerCard.element.classList.add('card-active');
-    }
-
-    if (direction === 'forward') {
-      newStep.offsetHeight;
-      requestAnimationFrame(() => {
-        newStep.classList.add('is-active');
-      });
-    }
-
-    if (state.currentViewerCard && !isNaN(x) && !isNaN(y) && !isNaN(zoom)) {
-      if (state.currentViewerCard.isReady) {
-        animateViewerToPosition(state.currentViewerCard, x, y, zoom);
-      } else {
-        console.warn('Viewer not ready, queueing zoom');
-        state.currentViewerCard.pendingZoom = { x, y, zoom, snap: false };
-      }
-    }
+  if (newIndex === -1) {
+    _restoreIntro();
+    return;
   }
 
+  // The card stack handles all visual transitions, viewer switching, and preloading
+  activateCard(newIndex, direction);
+
+  // Panel trigger data update
   updateViewerInfo(newIndex);
-  preloadNearbyViewers(newIndex, 3, 2);
+  if (state.onStepChange) state.onStepChange(newIndex);
 }
 
 /**
- * Navigate to the next step.
+ * Restore the intro, the state that sits before step 0.
+ *
+ * Five things go back: the intro card into view, step 0's text card, any
+ * title card holding the screen and the first object's viewer plate off the
+ * bottom of the screen, and the step chrome out of sight. A story whose
+ * author gave it no intro card still passes through here, and each piece is
+ * skipped where it is absent.
  */
-export function nextStep() {
-  goToStep(state.currentIndex + 1, 'forward');
+function _restoreIntro() {
+  _showIntroCard();
+  _sendFirstTextCardOffScreen();
+  releaseTitleCardsForIntro();
+  _sendPlateOffScreen(state.viewerPlates?.[window.storyData?.firstObject]);
+
+  state.currentObjectScene = { objectId: null, scenePosition: 0 };
+  _hideStepChrome();
+
+  if (state.onStepChange) state.onStepChange(-1);
+}
+
+// ── Intro card ───────────────────────────────────────────────────────────────
+
+/**
+ * Bring the intro card back down into view.
+ */
+function _showIntroCard() {
+  const intro = document.querySelector('.story-intro');
+  if (!intro) return;
+
+  intro.style.transition = 'transform var(--card-motion-duration) var(--card-motion-easing)';
+  intro.style.transform = 'translateY(0)';
 }
 
 /**
- * Navigate to the previous step.
+ * Send step 0's text card off the bottom of the screen.
+ *
+ * The card carries its authored messiness — a rotation and a small offset —
+ * in its transform, so the slide has to restate them or the card would snap
+ * square on its way out. A story whose first step is a section has no text
+ * card here at all; that first card is a title card, and
+ * releaseTitleCardsForIntro sends it away instead.
  */
-export function prevStep() {
-  goToStep(state.currentIndex - 1, 'backward');
+function _sendFirstTextCardOffScreen() {
+  const firstCard = state.textCards?.[0];
+  if (!firstCard) return;
+
+  firstCard.classList.remove('is-active', 'is-stacked');
+  const rot  = parseFloat(firstCard.dataset.messinessRot  || 0);
+  const offX = parseFloat(firstCard.dataset.messinessOffX || 0);
+  const offY = parseFloat(firstCard.dataset.messinessOffY || 0);
+  firstCard.style.transform = `translateY(100vh) rotate(${rot}deg) translate(${offX}px, ${offY}px)`;
 }
 
-// ── Button navigation (mobile + embed) ───────────────────────────────────────
+/**
+ * Send a viewer plate off the bottom of the screen.
+ *
+ * @param {HTMLElement} [plate] - The plate, where the story has one.
+ */
+function _sendPlateOffScreen(plate) {
+  if (!plate) return;
+
+  plate.container.style.transform = 'translateY(100%)';
+  plate.container.classList.remove('is-active');
+}
+
+/**
+ * Hide what belongs to a story step rather than to the intro: the step
+ * counter and the object credit badge.
+ */
+function _hideStepChrome() {
+  updateViewerInfo(-1);
+
+  const creditBadge = document.getElementById('object-credits-badge');
+  if (creditBadge) creditBadge.classList.add('d-none');
+}
+
+// ── Button navigation (vertical layout + embed) ───────────────────────────────────────
+
+/**
+ * Record the step button navigation has put the story on, -1 for the intro.
+ *
+ * Where no scroll engine runs, this is the only writer of state.currentIndex,
+ * and it tells the nav button, which the engine does on its own path. Where
+ * the engine runs (embed), it writes both as the scroll reaches the step, and
+ * this leaves them to it.
+ *
+ * @param {number} index - Step index, or -1 for the intro.
+ */
+function recordButtonStep(index) {
+  if (state.lenis) return;
+  state.currentIndex = index;
+  if (state.onStepChange) state.onStepChange(index);
+}
+
+/**
+ * Put button navigation on a step it did not walk to: a deep link, or a jump
+ * from within the story. That step's element is the one marked active, the
+ * buttons are enabled for a step rather than the intro, and the step is
+ * recorded as current.
+ *
+ * @param {number} index - Step index.
+ */
+export function jumpButtonsTo(index) {
+  state.currentButtonStep = index;
+  state.buttonInIntro = false;
+  state.steps.forEach((step, i) => step.classList.toggle('mobile-active', i === index));
+  updateButtonNavStates();
+  recordButtonStep(index);
+}
+
+/**
+ * Put button navigation on the intro, in the state a first load leaves it in:
+ * step 0 is the step "next" leaves the intro for, and "previous" is disabled
+ * because there is nothing before the intro. A story with no buttons has
+ * nothing to put back.
+ */
+export function putButtonsOnIntro() {
+  if (!state.buttonNavButtons) return;
+  state.buttonInIntro = true;
+  state.currentButtonStep = 0;
+  state.steps.forEach((step, i) => step.classList.toggle('mobile-active', i === 0));
+  updateButtonNavStates();
+}
+
+/**
+ * Put the buttons on the step the scroll engine has put the story on, -1 for
+ * the intro.
+ *
+ * Only an embed has both. The engine calls this for every step it reaches,
+ * whatever started the move, so the next tap goes on from where the reader is
+ * and the buttons are disabled for that step. Without buttons (the desktop
+ * scroll engine) there is nothing to move.
+ *
+ * @param {number} index - Step index, or -1 for the intro.
+ */
+export function followEngine(index) {
+  if (!state.buttonNavButtons) return;
+  if (index < 0) {
+    putButtonsOnIntro();
+  } else {
+    jumpButtonsTo(index);
+  }
+}
 
 /**
  * Create the previous/next navigation button elements.
@@ -221,16 +283,15 @@ function createNavigationButtons() {
 }
 
 /**
- * Set up button-based navigation for mobile or embed mode.
+ * Set up button navigation for the vertical layout or embed mode.
  *
  * Both modes use identical logic — previous/next buttons at the bottom of
- * the screen. The mode parameter is only used in log messages.
- *
- * @param {string} mode - 'mobile' or 'embed' (for logging).
+ * the screen.
  */
-export function initializeButtonNavigation(mode) {
-  console.log(`Initializing ${mode} button navigation`);
-
+export function initializeButtonNavigation() {
+  // The intro's hint is chosen in CSS from this marker, so it has to be set
+  // wherever the buttons are the navigation, whatever the layout.
+  document.documentElement.dataset.navigation = 'buttons';
   state.steps = Array.from(document.querySelectorAll('.story-step'));
 
   initializeLoadingShimmer();
@@ -241,273 +302,537 @@ export function initializeButtonNavigation(mode) {
 
   if (state.steps.length > 0) {
     state.steps[0].classList.add('mobile-active');
-    state.currentMobileStep = 0;
+    state.currentButtonStep = 0;
   }
+
+  // The story boots on the intro card, so button navigation starts there:
+  // the first "next" dismisses the intro into step 0, and "prev" stays
+  // disabled until the intro is dismissed.
+  state.buttonInIntro = !!document.querySelector('.story-intro');
 
   const buttons = createNavigationButtons();
   if (!buttons) return;
 
-  state.mobileNavButtons = { prev: buttons.prev, next: buttons.next };
+  state.buttonNavButtons = { prev: buttons.prev, next: buttons.next };
 
-  buttons.prev.addEventListener('click', goToPreviousMobileStep);
-  buttons.next.addEventListener('click', goToNextMobileStep);
+  buttons.prev.addEventListener('click', goToPreviousButtonStep);
+  buttons.next.addEventListener('click', goToNextButtonStep);
 
-  updateMobileButtonStates();
-
-  console.log(`${mode.charAt(0).toUpperCase() + mode.slice(1)} navigation initialized with ${state.steps.length} steps`);
+  updateButtonNavStates();
+  initKeyboardNavigation();
 }
 
 /**
- * Navigate to the next step (mobile/embed).
+ * Navigate to the next step (button navigation).
  */
-function goToNextMobileStep() {
-  if (state.currentMobileStep >= state.steps.length - 1) {
-    console.log('Already at last step');
+function goToNextButtonStep() {
+  if (state.lenis) {
+    _moveThroughEngine(buttonHeading() + 1);
     return;
   }
-  goToMobileStep(state.currentMobileStep + 1);
-}
-
-/**
- * Navigate to the previous step (mobile/embed).
- */
-function goToPreviousMobileStep() {
-  if (state.currentMobileStep <= 0) {
-    console.log('Already at first step');
+  // From intro state → step 0
+  if (state.buttonInIntro) {
+    _dismissButtonIntro();
     return;
   }
-  goToMobileStep(state.currentMobileStep - 1);
+  if (state.currentButtonStep >= state.steps.length - 1) {
+    return;
+  }
+  goToButtonStep(state.currentButtonStep + 1);
 }
 
 /**
- * Navigate to a specific step (mobile/embed).
+ * Navigate to the previous step (button navigation).
+ */
+function goToPreviousButtonStep() {
+  if (state.lenis) {
+    _moveThroughEngine(buttonHeading() - 1);
+    return;
+  }
+  if (state.buttonInIntro) {
+    return;
+  }
+  // From step 0 → intro state
+  if (state.currentButtonStep === 0) {
+    _restoreButtonIntro();
+    return;
+  }
+  goToButtonStep(state.currentButtonStep - 1);
+}
+
+/**
+ * Restore the intro card in button navigation (backward from step 0).
+ *
+ * The same four pieces the desktop intro restoration moves, plus the two
+ * things button navigation owns: the tap cooldown, and the button states
+ * that keep "previous" disabled on the intro. The plate is taken by
+ * position rather than by object id, because button navigation tracks steps
+ * and not scenes.
+ */
+function _restoreButtonIntro() {
+  if (state.buttonNavCooldown) return;
+
+  state.buttonNavCooldown = true;
+  setTimeout(() => { state.buttonNavCooldown = false; }, BUTTON_NAV_COOLDOWN);
+
+  // The intro carries no camera travel: the move takes the base.
+  setMoveSeconds(moveSeconds(0));
+  _showIntroCard();
+  _sendFirstTextCardOffScreen();
+  _sendPlateOffScreen(state.viewerPlates[0]);
+
+  state.currentObjectScene = { objectId: null, scenePosition: 0 };
+  _hideStepChrome();
+
+  putButtonsOnIntro();
+  recordButtonStep(-1);
+  writeHash();
+}
+
+/**
+ * Dismiss the intro card and show step 0 (forward from intro).
+ */
+function _dismissButtonIntro() {
+  if (state.buttonNavCooldown) return;
+
+  state.buttonNavCooldown = true;
+  setTimeout(() => { state.buttonNavCooldown = false; }, BUTTON_NAV_COOLDOWN);
+
+  state.buttonInIntro = false;
+  setMoveSeconds(moveSeconds(0));
+
+  // Hide intro card
+  const intro = document.querySelector('.story-intro');
+  if (intro) {
+    intro.style.transition = 'transform var(--card-motion-duration) var(--card-motion-easing)';
+    intro.style.transform = 'translateY(-100%)';
+  }
+
+  // Activate step 0
+  state.currentButtonStep = 0;
+  activateCard(0, 'forward');
+  updateViewerInfo(0);
+  updateButtonNavStates();
+  recordButtonStep(0);
+  writeHash();
+}
+
+/**
+ * Move the story by a button tap in embed mode, where the scroll engine
+ * carries every move: the cards, the intro, the fragment and the buttons
+ * follow its scroll as they do a key press or the wheel. The target is taken
+ * from where the engine is going, so a second tap during a move goes on from
+ * that move's landing.
+ *
+ * Nothing here says where the reader is. The counter, the current step and
+ * the buttons are the scroll's to write as it reaches the step; a tap that
+ * wrote them first would leave them wrong whenever the move is refused or cut
+ * short, and would show the count going forwards, back and forwards again on
+ * a second tap.
+ *
+ * @param {number} newIndex - Target step index, or -1 for the intro.
+ */
+function _moveThroughEngine(newIndex) {
+  if (newIndex < -1 || newIndex >= state.steps.length) return;
+  if (state.buttonNavCooldown) return;
+  if (!advanceToStep(newIndex)) return;
+
+  state.buttonNavCooldown = true;
+  setTimeout(() => { state.buttonNavCooldown = false; }, BUTTON_NAV_COOLDOWN);
+
+  if (newIndex >= 0) {
+    const plate = state.viewerPlates[state.stepToScene[newIndex]];
+    if (!plate || !plate.isReady) showViewerSkeletonState();
+  }
+}
+
+/**
+ * Navigate to a specific step where no scroll engine runs (phones, iPads).
  *
  * Handles cooldown, skeleton loading states, step class toggling,
- * object switching or pan/zoom, and preloading.
+ * and card stack activation.
  *
  * @param {number} newIndex - Target step index.
  */
-function goToMobileStep(newIndex) {
+function goToButtonStep(newIndex) {
   if (newIndex < 0 || newIndex >= state.steps.length) {
     return;
   }
 
   // Cooldown to prevent rapid tapping
-  if (state.mobileNavigationCooldown) {
-    console.log('Mobile navigation on cooldown, ignoring tap');
+  if (state.buttonNavCooldown) {
     return;
   }
 
   // Check if viewer needs loading
-  const newStep = state.steps[newIndex];
-  const objectId = newStep.dataset.object;
-  const viewerCard = state.viewerCards.find(vc => vc.objectId === objectId);
+  // Keyed by scene: an object appearing in several scenes has a plate for
+  // each, and asking by objectId answers for whichever was built first.
+  const plate = state.viewerPlates[state.stepToScene[newIndex]];
 
-  if (!viewerCard || !viewerCard.isReady) {
+  if (!plate || !plate.isReady) {
     showViewerSkeletonState();
   }
 
   // Activate cooldown
-  state.mobileNavigationCooldown = true;
+  state.buttonNavCooldown = true;
   setTimeout(() => {
-    state.mobileNavigationCooldown = false;
-  }, MOBILE_NAV_COOLDOWN);
+    state.buttonNavCooldown = false;
+  }, BUTTON_NAV_COOLDOWN);
 
-  console.log(`Mobile navigation: ${state.currentMobileStep} → ${newIndex}`);
+  const direction = newIndex > state.currentButtonStep ? 'forward' : 'backward';
+  const travel = travelBetween(state.currentButtonStep, newIndex);
 
   // Swap step visibility
-  state.steps[state.currentMobileStep].classList.remove('mobile-active');
+  state.steps[state.currentButtonStep].classList.remove('mobile-active');
   state.steps[newIndex].classList.add('mobile-active');
-  state.currentMobileStep = newIndex;
+  state.currentButtonStep = newIndex;
 
-  updateMobileButtonStates();
+  updateButtonNavStates();
 
-  // Handle viewer updates
-  const x = parseFloat(newStep.dataset.x);
-  const y = parseFloat(newStep.dataset.y);
-  const zoom = parseFloat(newStep.dataset.zoom);
-  const page = newStep.dataset.page ? parseInt(newStep.dataset.page, 10) : undefined;
-
-  const mobilePageChanged = state.currentViewerCard && state.currentViewerCard.page !== (page || undefined);
-  if (objectId && (!state.currentViewerCard || state.currentViewerCard.objectId !== objectId || mobilePageChanged)) {
-    console.log(`Switching to object: ${objectId}${mobilePageChanged ? ` (page changed to ${page})` : ''}`);
-    switchToObjectMobile(objectId, newIndex, x, y, zoom, page);
-    state.currentObject = objectId;
-  } else if (state.currentViewerCard && !isNaN(x) && !isNaN(y) && !isNaN(zoom)) {
-    if (state.currentViewerCard.isReady) {
-      animateViewerToPosition(state.currentViewerCard, x, y, zoom);
-    } else {
-      state.currentViewerCard.pendingZoom = { x, y, zoom, snap: false };
-    }
-  }
-
+  // No scroll engine, so no per-frame writer: this path moves the card itself
+  // and is the only thing that can state where the reader now is. The card
+  // and the camera move over the duration the camera travel asks for.
+  setMoveSeconds(moveSeconds(travel));
+  activateCard(newIndex, direction);
   updateViewerInfo(newIndex);
-  preloadNearbyViewers(newIndex, 2, 2);
+  recordButtonStep(newIndex);
+
+  writeHash();
 }
 
 /**
- * Update mobile button enabled/disabled states at step boundaries.
+ * Update button enabled/disabled states at step boundaries.
  */
-function updateMobileButtonStates() {
-  if (!state.mobileNavButtons) return;
-  state.mobileNavButtons.prev.disabled = (state.currentMobileStep === 0);
-  state.mobileNavButtons.next.disabled = (state.currentMobileStep === state.steps.length - 1);
+function updateButtonNavStates() {
+  if (!state.buttonNavButtons) return;
+  state.buttonNavButtons.prev.disabled = !!state.buttonInIntro;
+  state.buttonNavButtons.next.disabled = (state.currentButtonStep === state.steps.length - 1);
 }
 
-// ── Keyboard input ───────────────────────────────────────────────────────────
+// ── Keyboard input ─────────────────────────────────────────────────────────
+
+/**
+ * What each navigation key does.
+ *
+ * A Map rather than an object literal, so that a key value is looked up as
+ * itself and nothing inherited can answer for it. Page Down and Page Up move
+ * a step as the arrow keys do; every other key the story reads has an action
+ * of its own.
+ *
+ * @type {Map<string, (e: KeyboardEvent) => void>}
+ */
+const KEY_ACTIONS = new Map([
+  ['ArrowDown',  (e) => _stepKey(e, 'forward')],
+  ['PageDown',   (e) => _stepKey(e, 'forward')],
+  ['ArrowUp',    (e) => _stepKey(e, 'backward')],
+  ['PageUp',     (e) => _stepKey(e, 'backward')],
+  ['ArrowRight', (e) => _rightKey(e)],
+  ['ArrowLeft',  (e) => _leftKey(e)],
+  ['Escape',     (e) => _escapeKey(e)],
+  [' ',          (e) => _spaceKey(e)],
+  ['Home',       (e) => _edgeKey(e, 'start')],
+  ['End',        (e) => _edgeKey(e, 'end')],
+]);
+
+/**
+ * The keys whose auto-repeat is cancelled outside a panel, so the browser does
+ * not scroll the document under the scroll engine.
+ *
+ * @type {Set<string>}
+ */
+const REPEAT_CANCELLED_KEYS = new Set([
+  'ArrowDown', 'PageDown', 'ArrowUp', 'PageUp', 'Home', 'End', ' ',
+]);
 
 /**
  * Handle keyboard navigation and panel control.
  *
+ * Auto-repeat key events never step the story — each physical key press
+ * advances exactly one step — but allowed through while a panel is open, so
+ * that a held arrow key keeps the panel scrolling. Outside a panel a repeated
+ * story key is cancelled, so the browser does not scroll the document under
+ * Lenis, unless it comes from a control or an open dialog, which keep it.
+ * Home and End go to the intro and the last step on
+ * the first press; their repeats are cancelled and take no step. Every key this
+ * reads is left to an open dialog when it comes from inside one: the step
+ * keys, Space, Home and End, ArrowLeft, ArrowRight and Escape.
+ *
  * @param {KeyboardEvent} e
  */
 function handleKeyboard(e) {
-  switch (e.key) {
-    case 'ArrowDown':
-    case 'PageDown':
-      e.preventDefault();
-      if (!state.scrollLockActive) {
-        nextStep();
-      }
-      break;
-
-    case 'ArrowUp':
-    case 'PageUp':
-      e.preventDefault();
-      if (!state.scrollLockActive) {
-        prevStep();
-      }
-      break;
-
-    case 'ArrowRight':
-      e.preventDefault();
-      if (!state.isPanelOpen) {
-        const stepForL1 = getCurrentStepData();
-        const stepNumForL1 = getCurrentStepNumber();
-        if (stepForL1 && stepHasLayer1Content(stepForL1)) {
-          openPanel('layer1', stepNumForL1);
-        }
-      } else if (state.panelStack.length === 1 && state.panelStack[0]?.type === 'layer1') {
-        const stepForL2 = getCurrentStepData();
-        const stepNumForL2 = getCurrentStepNumber();
-        if (stepForL2 && stepHasLayer2Content(stepForL2)) {
-          openPanel('layer2', stepNumForL2);
-        }
-      }
-      break;
-
-    case 'ArrowLeft':
-      e.preventDefault();
-      if (state.isPanelOpen) {
-        closeTopPanel();
-      }
-      break;
-
-    case 'Escape':
-      if (state.isPanelOpen) {
-        e.preventDefault();
-        closeTopPanel();
-      }
-      break;
-
-    case ' ':
-      e.preventDefault();
-      if (!state.scrollLockActive) {
-        if (e.shiftKey) {
-          prevStep();
-        } else {
-          nextStep();
-        }
-      }
-      break;
-  }
-}
-
-// ── Scroll input ─────────────────────────────────────────────────────────────
-
-/**
- * Handle wheel events with scroll accumulation.
- *
- * Collects scroll distance until the threshold is reached, then triggers
- * a step change. Respects panel freeze and viewer scroll isolation.
- *
- * @param {WheelEvent} e
- */
-function handleScroll(e) {
-  if (state.scrollLockActive) {
-    state.scrollAccumulator = 0;
+  if (e.repeat && !state.isPanelOpen) {
+    _repeatKey(e);
     return;
   }
 
-  // Ignore wheel events from the viewer column (UV handles zoom/pan)
-  if (e.target.closest('.viewer-column')) {
-    return;
-  }
-
-  const now = Date.now();
-  const timeSinceLastChange = now - state.lastStepChangeTime;
-
-  if (timeSinceLastChange < STEP_COOLDOWN) {
-    state.scrollAccumulator *= 0.5;
-    return;
-  }
-
-  const cappedDelta = Math.max(-MAX_SCROLL_DELTA, Math.min(MAX_SCROLL_DELTA, e.deltaY));
-  state.scrollAccumulator += cappedDelta;
-
-  if (state.scrollAccumulator >= state.scrollThreshold) {
-    nextStep();
-    state.scrollAccumulator = 0;
-  } else if (state.scrollAccumulator <= -state.scrollThreshold) {
-    prevStep();
-    state.scrollAccumulator = 0;
-  }
-}
-
-// ── Touch input (iPad/tablet swipe) ──────────────────────────────────────────
-
-/**
- * Record touch start position for swipe detection.
- *
- * @param {TouchEvent} e
- */
-function handleTouchStart(e) {
-  state.touchStartY = e.touches[0].clientY;
+  KEY_ACTIONS.get(e.key)?.(e);
 }
 
 /**
- * Detect swipe direction and trigger step navigation.
+ * Cancel an auto-repeated story key.
  *
- * Swipe up (finger moves toward top of screen) → next step.
- * Swipe down (finger moves toward bottom) → previous step.
- * Requires a minimum swipe distance of 20 % of viewport height.
+ * The browser scrolls the document for every one of these keys, and a story's
+ * position belongs to the scroll engine, so a repeat that reaches the browser
+ * moves the page by an amount no step accounts for. A repeat from inside an
+ * open dialog, or of Space from a control Space activates, is that element's
+ * own and is left alone. A field outside a dialog is not exempt: at its edge a
+ * held arrow or Page key passes to the document and scrolls it, and a story
+ * page's fields all sit in the Share dialog.
  *
- * @param {TouchEvent} e
+ * @param {KeyboardEvent} e
  */
-function handleTouchEnd(e) {
-  state.touchEndY = e.changedTouches[0].clientY;
+function _repeatKey(e) {
+  if (_isInOpenDialog(e)) return;
+  if (e.key === ' ' && _isSpaceControl(e)) return;
+  if (REPEAT_CANCELLED_KEYS.has(e.key)) e.preventDefault();
+}
 
-  const now = Date.now();
-  const timeSinceLastChange = now - state.lastStepChangeTime;
+/**
+ * Move one step, or scroll the open panel instead.
+ *
+ * A panel takes the key first, and the event stays uncancelled in that
+ * state so that a panel too long for its own scrolling still gets the
+ * browser's. With no panel open the key belongs to the story and is
+ * cancelled whether or not a scroll lock lets the step through; from inside
+ * an open dialog the key is the dialog's and is left uncancelled.
+ *
+ * @param {KeyboardEvent} e
+ * @param {string} direction - 'forward' or 'backward'.
+ */
+function _stepKey(e, direction) {
+  if (_isInOpenDialog(e)) return;
+  if (_panelTookScroll(direction === 'forward' ? 40 : -40)) return;
 
-  if (timeSinceLastChange < STEP_COOLDOWN) {
-    return;
-  }
+  e.preventDefault();
+  _navigateStep(direction);
+}
 
-  if (state.scrollLockActive) {
-    return;
-  }
+/**
+ * Open the next layer panel on ArrowRight.
+ *
+ * From inside an open dialog the key is the dialog's, to move a caret or an
+ * option, and is left uncancelled with no panel opened behind it.
+ *
+ * @param {KeyboardEvent} e
+ */
+function _rightKey(e) {
+  if (_isInOpenDialog(e)) return;
 
-  const swipeDistance = state.touchEndY - state.touchStartY;
+  e.preventDefault();
+  _openNextLayer();
+}
 
-  if (swipeDistance < -state.touchThreshold) {
-    nextStep();
-  } else if (swipeDistance > state.touchThreshold) {
-    prevStep();
+/**
+ * Close the topmost panel on ArrowLeft.
+ *
+ * From inside an open dialog the key is the dialog's, to move a caret or an
+ * option, and is left uncancelled with no panel closed behind it.
+ *
+ * @param {KeyboardEvent} e
+ */
+function _leftKey(e) {
+  if (_isInOpenDialog(e)) return;
+
+  e.preventDefault();
+  _closeTopmostPanel(e);
+}
+
+/**
+ * Close the topmost panel on Escape.
+ *
+ * The Share dialog can be opened over an open panel, which stays open under
+ * it. Escape from inside the dialog closes the dialog alone, so the key is
+ * left to the dialog and the panel behind it is not closed.
+ *
+ * @param {KeyboardEvent} e
+ */
+function _escapeKey(e) {
+  if (_isInOpenDialog(e)) return;
+
+  _closeTopmostPanel(e);
+}
+
+/**
+ * Selector for elements that act on Space themselves. A link is not one:
+ * Space on a link scrolls the page, which in a story is a step.
+ *
+ * @type {string}
+ */
+const SPACE_CONTROLS =
+  'button, summary, [role="button"], input, select, textarea, [contenteditable]:not([contenteditable="false"])';
+
+/**
+ * Whether the key event came from a control that Space activates.
+ *
+ * @param {KeyboardEvent} e
+ * @returns {boolean}
+ */
+function _isSpaceControl(e) {
+  const target = e.target;
+  return !!(target && target.closest && target.closest(SPACE_CONTROLS));
+}
+
+/**
+ * Whether the key event came from inside a modal dialog, which reads the arrow
+ * keys itself and sits over the story without opening a panel.
+ *
+ * The dialog counts while it closes: Escape hides it before the key reaches
+ * the document, so a test for `.show` would pass the key on to the story.
+ *
+ * @param {KeyboardEvent} e
+ * @returns {boolean}
+ */
+function _isInOpenDialog(e) {
+  const target = e.target;
+  return !!(target && target.closest && target.closest('.modal, dialog[open]'));
+}
+
+/**
+ * Go to the intro (Home) or the last step (End), by the moves Back to Start
+ * and a contents link make, and cancel the browser's own jump, which would
+ * scroll the document under the scroll engine.
+ *
+ * An open panel and an open dialog keep the key, uncancelled. A scroll lock
+ * holds the story where it is, so the key is cancelled and moves nothing.
+ *
+ * @param {KeyboardEvent} e
+ * @param {'start'|'end'} edge
+ */
+function _edgeKey(e, edge) {
+  if (state.isPanelOpen || _isInOpenDialog(e)) return;
+
+  e.preventDefault();
+  if (state.scrollLockActive) return;
+
+  if (edge === 'start') {
+    navigateToIntro();
+  } else {
+    navigateToStep(state.steps.length);
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+/**
+ * Page through the story, or through the open panel instead.
+ *
+ * Space carries the page's own scrolling, so it is cancelled in both states.
+ * Shift reverses it. On a focused control the key belongs to the control and
+ * is left to the browser, uncancelled, with no step moved; so is it inside an
+ * open dialog.
+ *
+ * @param {KeyboardEvent} e
+ */
+function _spaceKey(e) {
+  if (_isSpaceControl(e) || _isInOpenDialog(e)) return;
+
+  e.preventDefault();
+  if (_panelTookScroll(e.shiftKey ? -100 : 100)) return;
+
+  const direction = e.shiftKey ? 'backward' : 'forward';
+  _navigateStep(direction);
+}
+
+/**
+ * Give a scroll to the open panel, if there is one.
+ *
+ * @param {number} delta - Pixels to scroll (positive = down, negative = up).
+ * @returns {boolean} Whether a panel took the scroll.
+ */
+function _panelTookScroll(delta) {
+  if (!state.isPanelOpen) return false;
+
+  scrollOpenPanel(delta);
+  return true;
+}
+
+/**
+ * Move one step in the given direction.
+ *
+ * The scroll engine drives the move wherever Lenis is running. Where it is
+ * not, the key makes the same move as the matching button, so the buttons,
+ * the intro and the fragment follow it. A scroll lock — an interactive card
+ * holding the viewport — blocks both.
+ *
+ * @param {string} direction - 'forward' or 'backward'.
+ */
+function _navigateStep(direction) {
+  if (state.scrollLockActive) return;
+
+  if (state.lenis) {
+    keyboardNav(direction);
+    return;
+  }
+  if (direction === 'forward') {
+    goToNextButtonStep();
+  } else {
+    goToPreviousButtonStep();
+  }
+}
+
+/**
+ * Open the next layer of panels above what is already open.
+ *
+ * With nothing open that is layer 1; above a single open layer 1 it is
+ * layer 2. Layer 2 is the top of the stack, so a deeper stack, or a stack
+ * whose one panel is not a layer 1, opens nothing.
+ */
+function _openNextLayer() {
+  if (!state.isPanelOpen) {
+    _openLayerWithContent('layer1', stepHasLayer1Content);
+    return;
+  }
+  if (state.panelStack.length === 1 && state.panelStack[0]?.type === 'layer1') {
+    _openLayerWithContent('layer2', stepHasLayer2Content);
+  }
+}
+
+/**
+ * Open a panel layer for the current step, if that step has content for it.
+ *
+ * @param {string} type - Panel type ('layer1' or 'layer2').
+ * @param {Function} hasContent - Content test for that layer, from panels.js.
+ */
+function _openLayerWithContent(type, hasContent) {
+  const step = getCurrentStepData();
+  const stepNumber = getCurrentStepNumber();
+  if (step && hasContent(step)) {
+    openPanel(type, stepNumber);
+  }
+}
+
+/**
+ * Close the topmost open panel.
+ *
+ * The event is cancelled only when there is a panel to close, which leaves
+ * Escape to the page in every other state.
+ *
+ * @param {KeyboardEvent} e
+ */
+function _closeTopmostPanel(e) {
+  if (!state.isPanelOpen) return;
+
+  e.preventDefault();
+  closeTopPanel();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Scroll the topmost open panel's body by a given pixel delta.
+ *
+ * The Bootstrap Offcanvas root receives focus (tabindex="-1") but the
+ * scrollable area is .offcanvas-body inside it. Native arrow keys on
+ * the focused root don't propagate to the child, so we scroll it
+ * programmatically.
+ *
+ * @param {number} delta - Pixels to scroll (positive = down, negative = up).
+ */
+function scrollOpenPanel(delta) {
+  const top = state.panelStack[state.panelStack.length - 1];
+  if (!top) return;
+  const panel = document.getElementById(`panel-${top.type}`);
+  const body = panel?.querySelector('.offcanvas-body');
+  if (body) body.scrollBy({ top: delta, behavior: 'smooth' });
+}
 
 /**
  * Get the current step's number from its data attribute.
@@ -536,12 +861,22 @@ function getCurrentStepData() {
 /**
  * Update the step number display in the viewer info overlay.
  *
- * @param {number} stepNumber - The step number to display.
+ * @param {number} stepIndex - The step index to display.
  */
-function updateViewerInfo(stepNumber) {
+export function updateViewerInfo(stepIndex) {
+  const counter = document.getElementById('step-counter');
   const infoElement = document.getElementById('current-object-title');
-  if (infoElement) {
-    const stepTemplate = window.telarLang.stepNumber || "Step {{ number }}";
-    infoElement.textContent = stepTemplate.replace("{{ number }}", stepNumber);
+  if (!counter || !infoElement) return;
+
+  // Hide on intro (index -1), show on all story steps
+  if (stepIndex < 0) {
+    counter.classList.add('d-none');
+    return;
   }
+  counter.classList.remove('d-none');
+
+  const total = (window.storyData?.steps || []).filter(s => !s._metadata).length;
+  const stepTemplate = window.telarLang.stepNumber || "Step {{ number }}";
+  const display = stepTemplate.replace("{{ number }}", stepIndex + 1);
+  infoElement.textContent = total > 0 ? `${display} / ${total}` : display;
 }

@@ -1,442 +1,985 @@
 /**
  * Story Layout
  *
- * The split-screen story layout that is the core of a Telar story page. The
- * left column holds the narrative (story steps stacked vertically), and the
- * right column holds the fixed IIIF viewer. This partial covers the step
- * container positioning, the intro and outro cards, the viewer card stacking
- * and transition system, step indicators, the back-to-home button, the mobile
- * navigation buttons, and the height-based mobile tiers that adjust step sizing
- * for small phone screens.
+ * Full-viewport card-stack layout for Telar story pages. Viewer plates fill
+ * the entire viewport as backgrounds; text cards float over them on the left.
+ * All transitions are pure CSS slide animations — no fading, no opacity changes.
  *
- * @version v0.8.0-beta
+ * Also here: button navigation, btn-home, story unlock overlay,
+ * embed-mode styles, and height-based responsive tiers.
+ *
+ * @version v1.8.0
  */
 
-/* Story Layout - Split Screen with Card Stacking */
+@use 'responsive' as *;
+@use 'mixins' as *;
+
+@layer telar-components {
+
+// ── Story Viewport ────────────────────────────────────────────────────────────
+
 .story-container {
-  display: flex;
+  position: fixed;
+  width: 100vw;
   height: 100vh;
   overflow: hidden;
   background: #000;
+  // Fixed full-viewport stack — adding display:flex here breaks the card overlay
 }
 
-.narrative-column {
-  flex: 0 0 40%;
-  overflow-y: auto;
-  overflow-x: hidden;
-  background: #fff;
+// dvh override: browsers that support dvh use the dynamic viewport height,
+// eliminating the iOS Safari URL-bar-collapse layout jump. The vh fallback
+// above is retained for Firefox 97-100 and Chrome 99-107.
+@supports (height: 100dvh) {
+  .story-container {
+    height: 100dvh;
+  }
+}
+
+// ── Scroll Surface ────────────────────────────────────────────────────────────
+
+// Transparent scrollable element that gives Lenis real DOM overflow to measure.
+// Height set by JS: stepCount * window.innerHeight. The browser scrolls this;
+// Lenis smooths it; the card-stack reads animatedScroll per-frame.
+.scroll-surface {
   position: relative;
-  scroll-snap-type: y proximity;
-  scroll-padding-top: 10vh;
-}
-
-.viewer-column {
-  flex: 1;
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  background: #000;
-  overflow: hidden;
-}
-
-/* Viewer Card Stacking System */
-#viewer-cards-container {
-  position: relative;
-  width: 100%;
-  height: 100%;
-}
-
-/* ============================================================================
-   VIEWER CARD TRANSITIONS (v0.6.2)
-
-   Fade-only transitions for all viewports. Slide-up animation removed in v0.6.2
-   to reduce timing complexity and improve perceived performance.
-   Z-index handles card stacking; opacity handles visibility transitions.
-   ============================================================================ */
-.viewer-card {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  /* Fade-only transition - no slide animation */
-  transition: opacity 300ms ease-out;
-}
-
-.card-below {
-  opacity: 0;
+  width: 1px;
   pointer-events: none;
+  // height set by JS — creates real document overflow for Lenis
 }
 
-.card-active {
-  opacity: 1;
-  pointer-events: auto;
-}
+// ── Card Stack ────────────────────────────────────────────────────────────────
 
-/* Skeleton loading shimmer - subtle loading indicator during viewer initialization */
-#viewer-cards-container.skeleton-loading::before {
-  content: '';
+.card-stack {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  /* Subtle gradient that sweeps across */
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.1) 50%,
-    rgba(255, 255, 255, 0) 100%
-  );
-  animation: skeleton-shimmer 2s infinite;
-  z-index: 999;
-  pointer-events: none; /* Don't block viewer interactions */
-}
+  inset: 0;
+  // No z-index here: card z-index banding needs this container not to create a stacking context.
+  overflow: visible;
 
-@keyframes skeleton-shimmer {
-  0% {
-    transform: translateX(-100%);
+  // EN: A card's slide, a covered card's lift and a plate's travel are one
+  //     movement seen from three places, so they run for one duration. Every
+  //     transition for a card or a plate below reads this property instead of
+  //     restating the figure. The figure here is only what stands until the
+  //     card stack writes over it at init with the pace of a move to a step,
+  //     which is the same movement measured at the scroll.
+  // ES: El deslizamiento de una tarjeta, el ascenso de una tarjeta cubierta y
+  //     el recorrido de una lámina son un mismo movimiento visto desde tres
+  //     puntos, así que duran lo mismo. Todas las transiciones de tarjeta o de
+  //     lámina que vienen más abajo leen esta propiedad en vez de repetir la
+  //     cifra. La cifra que está aquí solo rige hasta que la pila de tarjetas la
+  //     sobrescribe al arrancar con el ritmo de un desplazamiento a un paso,
+  //     que es ese mismo movimiento medido en el scroll.
+  --card-motion-duration: 0.5s;
+
+  // EN: The same movement also runs on one curve, for the same reason it runs
+  //     for one duration. The scroll eases as `1 - (1-t)³`, and the viewer's
+  //     pan and zoom is written from the scroll position every frame, so it
+  //     arrives on that curve whatever the card does. The CSS `ease-out`
+  //     keyword is a gentler function that only shares the name: over a 1.2s
+  //     move it leaves the card a fifth of its travel behind the image in the
+  //     middle, meeting it only at the end. This is that cubic as a bezier.
+  // ES: Ese mismo movimiento corre además sobre una sola curva, por lo mismo
+  //     que dura lo mismo. El scroll suaviza como `1 - (1-t)³`, y el paneo y
+  //     el zoom del visor se escriben desde la posición del scroll en cada
+  //     cuadro, así que llegan con esa curva haga lo que haga la tarjeta. La
+  //     palabra clave `ease-out` de CSS es una función más suave que solo
+  //     comparte el nombre: en un movimiento de 1.2s deja la tarjeta a un
+  //     quinto de su recorrido por detrás de la imagen en la mitad, y solo la
+  //     alcanza al final. Esta es esa cúbica escrita como bezier.
+  --card-motion-easing: cubic-bezier(0.215, 0.61, 0.355, 1);
+
+  // During scroll-driven scrubbing: disable CSS transitions for per-frame control
+  &.is-scrubbing .viewer-plate,
+  &.is-scrubbing .text-card {
+    transition: none;
   }
-  100% {
-    transform: translateX(100%);
+
+  &.is-scrubbing .title-card {
+    transition: none;
   }
 }
 
-/* Story Steps Container - Fixed height for absolute positioning */
-.story-steps {
-  position: relative;
-  height: 100vh;
-  overflow: hidden;
-}
+// ── Viewer Plate ──────────────────────────────────────────────────────────────
 
-/* Story Step - Absolute positioned cards that stack */
-.story-step {
+// Full-viewport IIIF viewer background. One per unique object.
+.viewer-plate {
   position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100vh;
-  padding: 2rem;
-  background: #fff;
-  border-left: 3px solid transparent;
-  transform: translateY(100%);
-  opacity: 0;
-  transition:
-    border-color 0.3s ease,
-    opacity 0.4s ease-out,
-    transform 0.4s ease-out;
+  inset: 0;
+  box-sizing: border-box;
+  transform: translateY(100%);                    // offscreen below by default
+  transition: transform var(--card-motion-duration) var(--card-motion-easing);  // pure slide, no fade
+  // Top-edge shadow and border matching text cards (visible during slide-up)
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15), 0 -6px 24px rgba(0, 0, 0, 0.12);
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
 
-  /* Flex layout for content and button */
+  &.is-active {
+    transform: translateY(0);
+  }
+
+  // IIIF viewer container fills the plate.
+  .viewer-instance {
+    width: 100%;
+    height: 100%;
+  }
+
+  // Telar weave background on OSD's own container: the wrapper attaches
+  // OSD directly to .viewer-instance, so the weave belongs on OSD's
+  // container itself. This keeps the OSD area opaque during card-stack
+  // transitions (so you can't see the plate behind through the canvas)
+  // and shows the weave around the fitted image wherever the canvas
+  // content is transparent.
+  //
+  // !important is required: OpenSeadragon sets `background: none transparent`
+  // as an inline style attribute on .openseadragon-container at instantiation
+  // time, which CSS cannot beat by specificity alone.
+  .viewer-instance .openseadragon-container {
+    background: #fff url('../img/background-gris.svg') repeat !important;
+    background-size: 20px auto !important;
+  }
+
+  // Shadow around the image, cast onto the weave pattern background
+  .viewer-instance .openseadragon-canvas canvas {
+    filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.35));
+  }
+
+
+  // Loading shimmer while the IIIF viewer initialises
+  &[data-loading]::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, #1a1a1a 25%, #2a2a2a 50%, #1a1a1a 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    z-index: 1;
+    pointer-events: none;
+  }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+// ── Video plates ─────────────────────────────────────────────────────────────
+
+// Video plate: light surround background, iframe with rounded corners
+// and shadow, clip-end dim overlay. Auto-layout positions the iframe via JS.
+.viewer-plate.video-plate {
+  background: #fff url('../img/background-gris.svg') repeat;  // Telar weave pattern (same as IIIF plates)
+  background-size: 20px auto;
+
+  .video-iframe {
+    border-radius: 4px;  // rounded corners
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);  // subtle shadow
+    border: none;
+    overflow: hidden;  // clip child iframe to border-radius
+
+    // Vimeo SDK creates an iframe inside the container div (unlike YouTube
+    // which replaces it). Ensure it fills the positioned container.
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+
+    // Dark "cinematic frame" for embeds whose true aspect ratio is unknown
+    // (old YouTube videos with no maxres thumbnail; all Google Drive embeds).
+    // The region is filled and the provider's player letterboxes the video
+    // centred on black, so the black fill reads as an intentional player frame
+    // rather than a mis-sized box floating on the woven background.
+    &.video-iframe--letterbox {
+      background: #000;
+    }
+  }
+
+  .clip-end-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);  // semi-transparent dim
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 300ms ease-in;  // fade-in over 300ms
+    pointer-events: none;
+
+    &.visible {
+      opacity: 1;
+    }
+  }
+}
+
+// ── Audio plates ─────────────────────────────────────────────────────────────
+
+// Audio plate: solid opaque background with telar weave pattern.
+// Background + pattern set dynamically by audio-card.js from --color-link.
+.viewer-plate.audio-plate {
+  // background applied inline by audio-card.js
+}
+
+// Beside the side card. audio-layout.js compares the arrangement with the
+// card below against this geometry, through the mirrored custom properties.
+.waveform-container {
+  position: absolute;
+  top: 50%;
+  left: $telar-audio-wave-side-left;
+  width: $telar-audio-wave-side-width;
+  transform: translateY(-50%);
+  pointer-events: none; // display-only
+  z-index: 1; // above telar weave pattern (CSS background)
+}
+
+.audio-controls {
+  position: absolute;
+  z-index: 1;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-}
-
-/* Main content wrapper - centered vertically */
-.step-content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  width: 100%;
-}
-
-/* Active state - slides up to visible position */
-.story-step.is-active {
-  border-left-color: var(--color-primary);
-  opacity: 1;
-  transform: translateY(0);
-}
-
-/* Return Home Button - at bottom of last step */
-.step-home-button {
-  padding-top: 1.5rem;
-  padding-bottom: 0.5rem;
-  border-top: 1px solid #e0e0e0;
-  width: 100%;
-}
-
-/* Intro Step - First step in narrative column */
-.story-intro {
-  /* Uses same absolute positioning as normal steps */
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
   align-items: center;
-  border-left: none !important;
-  background: #f5f7fa;
-  /* Start visible (like normal step) */
-  transform: translateY(0) !important;
-  opacity: 1 !important;
+  gap: 12px;
+  bottom: calc(25% - 48px);
+  // 40% plus 16px from the right, or further right where that would put the
+  // row's left edge less than 16px inside the waveform beside a wider card.
+  // The row is three 44px buttons (.audio-btn) and two 12px gaps.
+  right: min(calc(40% + 16px), calc(100% - #{$telar-audio-wave-side-left} - 16px - 156px));
 }
 
-.intro-content {
+.audio-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  color: rgba(0, 0, 0, 0.7);
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+  transition: background 0.15s ease, transform 0.15s ease;
+
+  svg {
+    flex-shrink: 0;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      background: rgba(255, 255, 255, 0.85);
+      transform: scale(1.08);
+    }
+  }
+
+  &:active {
+    transform: scale(0.95);
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.5);
+    outline-offset: 2px;
+  }
+
+}
+
+.audio-elapsed {
+  position: absolute;
+  z-index: 1;
+  font-size: 0.8rem;
+  color: rgba(0, 0, 0, 0.7);
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border-radius: 20px;
+  padding: 0.4rem 0.85rem;
+  pointer-events: none;
+  bottom: calc(25% - 48px);
+  right: 16px;
+}
+
+// With the card below the waveform, which media-arrangement.js decides on a
+// horizontal layout, the waveform spans the width above the controls row and
+// the row is centred under it. The plate carries the geometry, computed by
+// audio-layout.js, as custom properties.
+.viewer-plate.audio-plate[data-media-arrangement="below"] {
+  .waveform-container {
+    top: var(--telar-audio-wave-top);
+    left: var(--telar-audio-wave-left);
+    width: var(--telar-audio-wave-width);
+    transform: none;
+  }
+
+  .audio-controls {
+    bottom: var(--telar-audio-controls-bottom);
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .audio-elapsed {
+    bottom: var(--telar-audio-controls-bottom);
+  }
+}
+
+.audio-play-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+
+  button {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.9);
+    border: none;
+    font-size: 2rem;
+    color: var(--color-link);
+    cursor: pointer;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+    transition: background 0.15s ease;
+
+    @media (hover: hover) and (pointer: fine) {
+      &:hover {
+        background: rgba(255, 255, 255, 1);
+      }
+    }
+
+    &:focus-visible {
+      outline: 2px solid rgba(255, 255, 255, 0.5);
+      outline-offset: 2px;
+    }
+  }
+
+  &.hidden {
+    display: none;
+  }
+}
+
+.video-play-overlay {
+  pointer-events: auto;
+
+  @media (hover: hover) and (pointer: fine) {
+    button:hover {
+      background: rgba(255, 255, 255, 0.85);
+    }
+  }
+
+  button:focus-visible {
+    outline: 2px solid var(--color-link);
+    outline-offset: 2px;
+  }
+}
+
+// ── Alerts inside viewer plates (e.g. audio load errors) ────────────────────
+.viewer-plate .telar-alert {
+  position: absolute;
+  z-index: 2;
   text-align: center;
-  max-width: 600px;
-  padding: 2rem;
+  // Desktop: centre in the visible area beside the text card, from its right
+  // edge to the window's
+  top: 50%;
+  left: calc((var(--telar-card-side-left) + var(--telar-card-side-width) + 100%) / 2);
+  transform: translate(-50%, -50%);
+  width: 50%;
+  max-width: 400px;
 }
 
-.intro-title {
-  font-size: 3rem;
-  font-weight: 700;
-  margin-bottom: 1.5rem;
-  color: var(--color-primary);
-  line-height: 1.2;
+.audio-clip-end-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transition: opacity 300ms ease-in;
+  pointer-events: none;
+
+  &.visible {
+    opacity: 1;
+  }
 }
 
-.intro-demo-label {
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: var(--color-accent, #6c757d);
-  margin-bottom: 0.5rem;
-  font-family: var(--font-body);
+@include vertical-layout {
+  .audio-btn {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 1.1rem;
+  }
+
+  .audio-controls {
+    right: 16px;
+    bottom: calc(25% - 56px);
+  }
+
+  .audio-elapsed {
+    right: 16px;
+    bottom: calc(25% - 56px);
+  }
 }
 
-.intro-byline {
-  font-size: 1.1rem;
-  color: #5a6c7d;
-  margin-top: 0.75rem;
-  margin-bottom: 1.5rem;
-  font-weight: 400;
+// ── Text Card ─────────────────────────────────────────────────────────────────
+
+// Floating card over the viewer, on the left. Its left edge and width are the
+// side-card geometry video-layout.js reads to place a video player beside it;
+// the width is the one card-fit.js writes for the window on a horizontal
+// layout.
+.text-card {
+  container-type: inline-size; // enables @container queries below
+  position: absolute;
+  left: $telar-card-side-left;
+  width: var(--telar-card-side-width);
+  // height set by JS: viewportH * 0.85
+  // top set by JS: centred + peek offset
+  background: #fff;
+  border-radius: 3px;
+  border: none;
+  padding: 1.5rem 2rem;
+  display: flex;
+  flex-direction: column;
+  // EN: The card is a fixed-height box, so centring the content is only safe
+  //     while it fits. `justify-content: center` distributes free space even
+  //     when it is negative, which pushes the question above the card's top
+  //     edge, from where neither clipping nor scrolling returns it.
+  //     `margin-block: auto` on the card's single flex item centres short
+  //     content and top-aligns long content, because auto margins absorb free
+  //     space only while there is some.
+  //     Auto margins rather than `justify-content: safe center`: both engines
+  //     have supported flex auto margins since flexbox shipped, whereas `safe
+  //     center` needs Safari 16 and below it drops silently to top alignment.
+  //     `overflow: hidden` keeps the card's content inside it: in horizontal
+  //     the card never overflows onto the image and nothing scrolls it,
+  //     so a wheel or a swipe over the card belongs to the story. The card
+  //     takes the height its content needs under the ceiling card-fit.js
+  //     writes; past the ceiling the content is clipped. Long content is
+  //     top-aligned, so the question is always where the card starts.
+  // ES: La tarjeta tiene altura fija, así que centrar el contenido solo es
+  //     seguro mientras quepa. `justify-content: center` reparte el espacio
+  //     libre incluso cuando es negativo, lo que empuja la pregunta por encima
+  //     del borde superior de la tarjeta, de donde no la devuelven ni el
+  //     recorte ni el desplazamiento. `margin-block: auto` en el único
+  //     elemento flex de la tarjeta centra el contenido corto y alinea arriba
+  //     el contenido largo, porque los márgenes automáticos solo absorben
+  //     espacio libre mientras lo haya.
+  //     Se usan márgenes automáticos y no `justify-content: safe center`:
+  //     los dos motores admiten márgenes automáticos en flexbox desde sus
+  //     inicios, mientras que `safe center` exige Safari 16, y en versiones
+  //     anteriores pasa en silencio a la alineación superior.
+  //     `overflow: hidden` mantiene el contenido dentro de la tarjeta: en el
+  //     diseño horizontal la tarjeta nunca se desborda sobre la imagen y el
+  //     navegador nunca la desplaza, así que un giro de la rueda del mouse o
+  //     un deslizamiento del dedo sobre la tarjeta es de la historia. La tarjeta toma la altura que su contenido necesita, hasta
+  //     el límite que escribe card-fit.js; si el contenido lo supera, se
+  //     recorta. El contenido largo se alinea arriba, así que la pregunta
+  //     queda siempre al comienzo de la tarjeta.
+  justify-content: flex-start;
+  overflow: hidden;
+
+  > :only-child {
+    margin-block: auto;
+  }
+
+  pointer-events: auto;
+  transform: translateY(100vh);          // offscreen below by default
+  transition: transform var(--card-motion-duration) var(--card-motion-easing);
+  // Base shadow — cards always look like cards, not flat divs
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15), 0 6px 24px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+
+  // Active card — stronger shadow
+  &.is-active {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), 0 8px 30px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+  }
+
+  // Peeked/stacked card — lighter shadow
+  &.is-stacked {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 3px 10px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
+  }
+
+  // ── Variable-height side card: the covered card ────────────────────────────
+  // EN: A covered card goes away through the top when nothing rises to cover
+  //     it, and nowhere at all when a plate does. card-pool.js writes that
+  //     inline, not this sheet: a card's transform goes inline on every
+  //     activation, so a rule here would lose in the cascade. What the
+  //     stylesheet owns is the clock the travel runs on, which is the
+  //     transition above.
+  // ES: Una tarjeta cubierta se va hacia arriba y sale de la pantalla cuando
+  //     nada sube a taparla, y no va a ninguna parte cuando la que sube es una
+  //     lámina. Eso lo escribe card-pool.js en línea, no esta hoja: el
+  //     `transform` de una tarjeta va en línea en cada activación, así que una
+  //     regla aquí perdería en la cascada. Lo que sí le corresponde a la hoja
+  //     de estilos es el reloj del recorrido: la transición de arriba.
+
+  .step-question {
+    font-family: var(--font-headings);
+    font-size: 1.5rem;
+    line-height: 1.2;
+    color: var(--color-heading);
+    margin-bottom: 0.75rem;
+  }
+
+  // EN: `.step-answer` is a grandchild of the card: card-pool.js clones the
+  //     server-rendered `.step-content` wrapper into it, and that wrapper is
+  //     the card's only flex item. So neither `flex` nor an overflow of its own
+  //     takes effect here. The card is what scrolls in vertical and what clips
+  //     in horizontal.
+  // ES: `.step-answer` es nieto de la tarjeta: card-pool.js clona dentro de él
+  //     el contenedor `.step-content` que genera el servidor, y ese
+  //     contenedor es el único elemento flex de la tarjeta. Por eso, ni `flex`
+  //     ni un `overflow` propio surten efecto aquí. Es la tarjeta la que se
+  //     desplaza en el diseño vertical y la que recorta en el horizontal.
+  // EN: Each width tier declares the answer's size in
+  //     `--telar-answer-base-size`; the answer keeps that size on every card.
+  // ES: Cada nivel de ancho declara el tamaño de la respuesta en
+  //     `--telar-answer-base-size`; la respuesta conserva ese tamaño en
+  //     todas las tarjetas.
+  .step-answer {
+    --telar-answer-base-size: 1rem;
+    font-size: var(--telar-answer-base-size);
+    line-height: 1.6;
+    color: var(--color-body);
+
+    p {
+      margin: 0;
+    }
+
+    p + p {
+      margin-top: 10px;
+    }
+  }
+
+  // EN: The build marks an answer of more than 15 lines (`answer_budget`);
+  //     the 18 lines it may have fit every side card only at this size and
+  //     with 10px between paragraphs.
+  // ES: El build marca la respuesta de más de 15 líneas (`answer_budget`);
+  //     las 18 líneas que puede tener caben en todas las tarjetas laterales
+  //     solo con este tamaño y 10px entre párrafos.
+  .step-answer--long {
+    font-size: calc(var(--telar-answer-base-size) * 0.9);
+  }
+
+  .step-actions {
+    margin-top: 1.25rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .panel-trigger {
+    padding: 0.5rem 1.25rem;
+    background: var(--color-button-bg);
+    color: var(--color-on-button);
+    font-weight: 600;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    align-self: flex-start;
+    border: none;
+    cursor: pointer;
+    transition: opacity 0.2s ease;
+
+    @media (hover: hover) and (pointer: fine) {
+      &:hover {
+        opacity: 0.85;
+      }
+    }
+  }
 }
 
-.intro-description {
-  font-size: 1.25rem;
-  color: #5a6c7d;
-  margin-bottom: 2rem;
-  line-height: 1.6;
+// ── Text Card Container Queries ───────────────────────────────────────────────
+// Card-width-driven padding and font-size scaling. Values chosen so there
+// is no visual jump at the most common phone widths.
+//
+// In horizontal mode, .text-card is 37% to 52% of the window wide
+// (card-fit.js), so (max-width: 480px) fires on the narrower windows; a
+// phone-height side card is 37% wide, where (max-width: 360px) fires.
+// In vertical mode, .text-card is calc(100% - 2rem) wide — both breakpoints
+// fire on all mobile viewports, so the user gets Tier-3 density by default.
+@container (max-width: 480px) {
+  .text-card {
+    padding: 1.3rem;
+
+    .step-question {
+      font-size: 1.35rem;
+      margin-bottom: 0.65rem;
+    }
+
+    .step-answer {
+      --telar-answer-base-size: 0.95rem;
+    }
+  }
 }
 
-.intro-hint {
-  margin-top: 3rem;
-  /* No opacity — text-muted class provides sufficient contrast reduction */
+@container (max-width: 360px) {
+  .text-card {
+    padding: 1rem;
+
+    .step-question {
+      font-size: 1.1rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .step-answer {
+      --telar-answer-base-size: 0.85rem;
+    }
+  }
 }
 
-/* Responsive hint text - show appropriate hint for device */
-.hint-mobile {
-  display: none;
+// ── Story Intro ───────────────────────────────────────────────────────────────
+
+// Full-viewport intro with floating card. z-index:0, covered by first viewer plate.
+.story-intro {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: #f5f7fa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--card-motion-duration) var(--card-motion-easing);  // slides away via translateY(-120vh)
 }
 
-@media (max-width: 768px) {
-  .hint-desktop {
+.intro-floating-card {
+  text-align: center;
+  max-width: 550px;
+  width: 90%;
+  padding: 2.5rem 3rem;
+
+  .intro-title {
+    font-family: var(--font-headings);
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: var(--color-heading);
+    line-height: 1.2;
+    margin-bottom: 0.5rem;
+  }
+
+  .intro-subtitle {
+    font-family: var(--font-headings);
+    font-size: 1.25rem;
+    font-weight: 400;
+    color: var(--color-heading);
+    margin-bottom: 0.75rem;
+  }
+
+  .intro-demo-label {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--color-accent);
+    margin-bottom: 0.5rem;
+  }
+
+  .intro-byline {
+    font-size: 1rem;
+    color: #5a6c7d;
+    margin-bottom: 0.75rem;
+    font-weight: 400;
+  }
+
+  .intro-description {
+    font-size: 1.1rem;
+    color: #5a6c7d;
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+  }
+
+  .intro-hint {
+    margin-top: 1.5rem;
+    font-size: 0.9rem;
+    color: #9aabbf;
+  }
+
+  // The hint names the navigation in use. main.js marks the root with
+  // data-navigation once it has chosen; until then (before the script runs,
+  // or while a protected story waits to be unlocked) the layout stands in
+  // for it, since a vertical layout always gets the buttons.
+  .hint-mobile {
     display: none;
   }
 
-  .hint-mobile {
-    display: inline;
+  :root[data-navigation='buttons'] & {
+    .hint-desktop {
+      display: none;
+    }
+    .hint-mobile {
+      display: inline;
+    }
+  }
+
+  @include vertical-layout {
+    :root:not([data-navigation]) & {
+      .hint-desktop {
+        display: none;
+      }
+      .hint-mobile {
+        display: inline;
+      }
+    }
+  }
+
+  // Alert/warning block within intro
+  .alert {
+    text-align: left;
+    font-size: 0.9rem;
   }
 }
 
-.btn-home {
-  position: fixed !important;
-  top: 2rem !important;
-  left: 2rem !important;
-  text-decoration: none;
-  color: #5a6c7d;
-  padding: 0.5rem 1rem;
-  border: 1px solid #cbd5e0;
+// ── TOC-enabled title card ────────────────────────────────────────────────────
+// When show_sections is enabled, the intro card uses the layer 2 panel colour.
+
+.story-intro--toc {
+  background: var(--color-panel-layer2-bg);
+  padding-top: 100px;
+
+  .intro-floating-card {
+    .intro-title {
+      color: var(--color-on-panel-layer2);
+    }
+
+    .intro-subtitle,
+    .intro-byline,
+    .intro-description {
+      color: var(--color-on-panel-layer2);
+      opacity: 0.85;
+    }
+
+    .intro-demo-label {
+      color: var(--color-on-panel-layer2);
+      opacity: 0.7;
+    }
+
+    .intro-hint {
+      color: var(--color-on-panel-layer2);
+      opacity: 0.5;
+    }
+  }
+}
+
+.intro-toc {
+  margin-top: 3.5rem;
+  text-align: center;
+
+  .intro-toc-heading {
+    font-family: var(--font-headings);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--color-on-panel-layer2);
+    opacity: 0.5;
+    margin-bottom: 0.75rem;
+  }
+
+  ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  li {
+    margin-bottom: 0.4rem;
+  }
+
+  .intro-toc-link {
+    color: var(--color-on-panel-layer2);
+    text-decoration: none;
+    font-family: var(--font-headings);
+    font-size: 1.05rem;
+    font-weight: 500;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+
+    @media (hover: hover) and (pointer: fine) {
+      &:hover {
+        opacity: 1;
+        text-decoration: underline;
+      }
+    }
+  }
+}
+
+// ── Title cards ───────────────────────────────────────────────────────────────
+// Full-viewport chapter heading dividers, visually identical to the story
+// intro card. Each title card is its own scene in the card stack.
+
+.title-card {
+  position: absolute;
+  inset: 0;
+  background: #f5f7fa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(100vh);
+  transition: transform var(--card-motion-duration) var(--card-motion-easing);
+
+  .title-card-inner {
+    text-align: center;
+    max-width: 550px;
+    width: 90%;
+    padding: 2.5rem 3rem;
+  }
+
+  .title-card-heading {
+    font-family: var(--font-headings);
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: var(--color-heading);
+    line-height: 1.2;
+    margin-bottom: 0.5rem;
+  }
+
+  .title-card-body {
+    font-size: 1.1rem;
+    color: #5a6c7d;
+    line-height: 1.6;
+  }
+
+  &.is-active {
+    transform: translateY(0);
+  }
+
+  &.is-stacked {
+    transform: translateY(0);
+  }
+}
+
+// ── Back to Home Button ───────────────────────────────────────────────────────
+
+// Fixed above the card-stack. High z-index to float above all cards.
+.btn-nav-back {
+  @include light-glass-button;
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  min-width: 9rem;
+  justify-content: center;
+  transition: background 0.3s ease, color 0.3s ease;
+  z-index: 9900;
+  display: flex;
+}
+
+// Icons hidden on desktop — text only
+.btn-nav-icon { display: none; }
+
+// ── Step Counter ─────────────────────────────────────────────────────────────
+
+.step-counter {
+  position: fixed;
+  top: 0.75rem;
+  right: 0.75rem;
+  padding: 0.4rem 0.85rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: rgba(0, 0, 0, 0.7);
   border-radius: 20px;
-  background: rgba(255, 255, 255, 0.8);
-  transition: all 0.3s ease;
-  z-index: 1040 !important;
+  font-size: 0.8rem;
+  z-index: 9900;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+
+// ── Object Credits Badge ─────────────────────────────────────────────────────
+
+.object-credits-badge {
+  position: fixed;
+  bottom: max(0.75rem, env(safe-area-inset-bottom));
+  right:  max(0.75rem, env(safe-area-inset-right));
+  padding: 0.4rem 0.85rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: rgba(0, 0, 0, 0.7);
+  border-radius: 20px;
+  font-size: 0.75rem;
+  z-index: 9900;
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  max-width: calc(100% - 2rem);
 }
 
-.btn-home:hover {
-  background: white;
-  color: var(--color-primary);
-  border-color: var(--color-primary);
+.credits-dismiss-btn {
+  background: none;
+  border: none;
+  color: rgba(0, 0, 0, 0.5);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  flex-shrink: 0;
+
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      color: rgba(255, 255, 255, 1);
+    }
+  }
 }
 
-/* Home button icon - hidden on desktop */
-.btn-home-icon {
+// ── Step Indicator Toggle ─────────────────────────────────────────────────────
+
+.hide-step-indicators .step-indicator {
   display: none;
 }
 
-/* Outro Step - End card in narrative column only */
-.story-outro {
+// ── Button navigation ─────────────────────────────────────────────────
+
+// The previous/next buttons (.mobile-nav) exist only where button navigation
+// runs: a vertical layout at load, embed mode, and iOS in either layout. An
+// iPad on its side is a horizontal layout, and a window opened narrow keeps
+// the buttons when widened, so the placement holds in every layout: fixed to
+// the right side, centred vertically over the full viewport, where it covers
+// no text card. Embed mode places them itself (_embed.scss).
+
+.mobile-nav {
+  position: fixed;
+  right: max(1rem, env(safe-area-inset-right));  // -right honours iPhone Pro side-notch on its side; the centred bottom is intentional.
+  bottom: 50%;
+  transform: translateY(50%);
+  z-index: 9900;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  gap: 0.75rem;
+}
+
+.mobile-nav button {
+  width: 66px;
+  height: 66px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.95);
+  border: 2px solid rgba(0, 0, 0, 0.1);
+  color: #333;
+  font-size: 1.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  display: flex;
   align-items: center;
-  border-left: none !important;
-  background: #f5f7fa;
-}
+  justify-content: center;
 
-.outro-content {
-  text-align: center;
-  max-width: 600px;
-  padding: 2rem;
-}
-
-.outro-title {
-  font-size: 2.5rem;
-  font-weight: 700;
-  margin-bottom: 1.5rem;
-  color: var(--color-primary);
-}
-
-.outro-text {
-  font-size: 1.25rem;
-  margin-bottom: 2rem;
-  color: #5a6c7d;
-}
-
-/* Story step text */
-.story-step h2 {
-  font-size: 1.75rem;
-  margin-bottom: 1rem;
-}
-
-.story-step p {
-  font-size: 1.1rem;
-  margin-bottom: 1.5rem;
-}
-
-/* Step Indicator Toggle */
-.hide-step-indicators .step-indicator {
-  display: none !important;
-}
-
-/* Mobile Responsive - Story Layout */
-@media (max-width: 768px) {
-  .story-container {
-    flex-direction: column;
-    height: auto;
+  @media (hover: hover) and (pointer: fine) {
+    &:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 1);
+      transform: scale(1.05);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
   }
 
-  .viewer-column {
-    flex: 0 0 60vh;
-    order: 1;
-    position: relative;
-    height: 60vh;
-    margin-bottom: 0;
-  }
-
-  .narrative-column {
-    flex: 0 0 40vh;
-    height: 40vh !important;
-    order: 2;
-    overflow-y: auto !important;
-  }
-
-  /* Mobile Button Navigation System */
-  /* Fix story steps container height */
-  .story-steps {
-    height: auto;
-    min-height: 40vh;
-    position: relative;
-  }
-
-  /* Hide all story steps by default on mobile */
-  .story-step {
-    display: none;
-    position: static !important;
-    height: auto !important;
-    min-height: 40vh;
-    max-height: 40vh;
-    padding: 1.5rem;
-    overflow-y: auto;
-    transform: none !important;
-    opacity: 1 !important;
-  }
-
-  /* Show only the active step */
-  .story-step.mobile-active {
-    display: flex;
-  }
-
-  /* Mobile intro styling - smaller text, left-aligned */
-  .story-intro .intro-content {
-    text-align: left;
-    max-width: 100%;
-    padding: 1rem;
-  }
-
-  .story-intro .intro-title {
-    font-size: 2rem;
-    margin-bottom: 1rem;
-  }
-
-  .story-intro .intro-byline {
-    font-size: 0.95rem;
-    margin-bottom: 1rem;
-  }
-
-  .story-intro .intro-description {
-    font-size: 1rem;
-    margin-bottom: 1rem;
-  }
-
-  .story-intro .intro-hint {
-    font-size: 0.9rem;
-    margin-top: 1.5rem;
-  }
-
-  /* Move panel trigger buttons to bottom on mobile */
-  .story-step .step-content {
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
-  }
-
-  .story-step .panel-trigger {
-    margin-top: auto;
-    align-self: flex-start;
-  }
-
-  /* Mobile Navigation Buttons - positioned on right side */
-  .mobile-nav {
-    position: fixed;
-    right: 1rem;
-    bottom: 50%;
-    transform: translateY(50%);
-    z-index: 1040;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .mobile-nav button {
-    width: 66px;
-    height: 66px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.95);
-    border: 2px solid rgba(0, 0, 0, 0.1);
-    color: #333;
-    font-size: 1.875rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .mobile-nav button:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 1);
-    transform: scale(1.05);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-  }
-
-  .mobile-nav button:disabled {
+  &:disabled {
     opacity: 0.3;
     cursor: not-allowed;
   }
+}
 
-  /* Mobile home button - match navigation button style */
-  .btn-home {
+@include vertical-layout {
+  // Navigation button — icon-only circular button
+  .btn-nav-back {
     min-height: 44px;
     min-width: 44px;
     width: 44px;
     height: 44px;
     padding: 0;
     border-radius: 50%;
-    top: 1rem !important;
-    left: 1rem !important;
+    top: 1rem;
+    left: 1rem;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -446,126 +989,211 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   }
 
-  /* Hide text on mobile, show only icon */
-  .btn-home-text {
+  .btn-nav-text {
     display: none;
   }
 
-  .btn-home-icon {
-    display: block !important; /* Override desktop hide */
+  .btn-nav-back.is-home .btn-nav-icon--home,
+  .btn-nav-back.is-start .btn-nav-icon--start {
+    display: block;
     font-size: 1.5rem;
   }
+
+  .step-counter {
+    font-size: 0.7rem;
+    padding: 0.3rem 0.7rem;
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .object-credits-badge {
+    font-size: 0.65rem;
+    padding: 0.3rem 0.6rem;
+    max-width: calc(100% - 1rem);
+    bottom: 0.5rem;
+    right: 0.5rem;
+  }
+
+  #object-credits-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: calc(100vw - 5rem);
+  }
+
+  // ── Bottom card: full-width, bottom-anchored ───────────────────────────────
+  .text-card {
+    left: 1rem;
+    width: calc(100% - 2rem);
+    // fights inline `top` set by card-pool.js on all text cards
+    top: auto !important;
+    bottom: $telar-card-mobile-bottom;
+    max-height: $telar-card-mobile-max-height;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    transition: transform var(--card-motion-duration) var(--card-motion-easing);  // one duration with the camera: its rect is read when the slide ends
+  }
+
+  // dvh override for the bottom card — same structure as story-container above.
+  // The $telar-card-mobile-max-height Sass var (40vh) is intentionally left as
+  // the vh fallback source-of-truth; this @supports block provides the dvh value
+  // at the rule level — simplest approach, no Sass var duplication.
+  //
+  // EN: The dvh cap has to precede the block that overrides for the phone-height side card: both
+  //     select `.text-card` at the same specificity, so source order decides it,
+  //     and that block's `max-height` only holds if it comes last.
+  // ES: El tope en dvh tiene que ir antes del bloque de la tarjeta lateral de poca altura:
+  //     las dos reglas seleccionan `.text-card` con la misma especificidad, así
+  //     que gana la que aparece después en la hoja, y el `max-height` de ese
+  //     bloque solo se impone si ese bloque queda después.
+  @supports (height: 100dvh) {
+    .text-card {
+      max-height: 40dvh;
+    }
+  }
+
+  // Per-card-type height — video/audio need less space for controls
+  .viewer-plate[data-card-type="youtube"] + .text-card,
+  .viewer-plate[data-card-type="vimeo"] + .text-card,
+  .viewer-plate[data-card-type="google-drive"] + .text-card,
+  .viewer-plate[data-card-type="audio"] + .text-card {
+    max-height: $telar-card-mobile-max-height-media;
+  }
+
+  // dvh override for media-type text cards (video/audio).
+  // $telar-card-mobile-max-height-media (35vh) stays as the vh fallback.
+  @supports (height: 100dvh) {
+    .viewer-plate[data-card-type="youtube"] + .text-card,
+    .viewer-plate[data-card-type="vimeo"] + .text-card,
+    .viewer-plate[data-card-type="google-drive"] + .text-card,
+    .viewer-plate[data-card-type="audio"] + .text-card {
+      max-height: 35dvh;
+    }
+  }
+
+  // Same shadow tokens as desktop but ensure they apply on mobile
+  .text-card.is-active {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), 0 8px 30px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+  }
+
+  // ── Mobile audio: centre waveform in the visible area above the card ────────
+  .waveform-container {
+    left: 5%;
+    width: 90%;
+    // Centre vertically in the top 60% (above the 35vh text card)
+    top: 27%;
+    transform: translateY(-50%);
+  }
+
+  .audio-controls {
+    // Centre controls horizontally, well above the text card + nav buttons
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(35vh + 5rem);
+  }
+
+  // dvh override for audio-controls bottom offset.
+  @supports (height: 100dvh) {
+    .audio-controls {
+      bottom: calc(35dvh + 5rem);
+    }
+  }
+
+  .audio-play-overlay {
+    // Hide on mobile — the controls row already has a play button
+    display: none;
+  }
+
+  // Mobile: centre alert in visible area above the bottom card
+  .viewer-plate .telar-alert {
+    left: 50%;
+    width: calc(100% - 4rem);
+    top: 25%;
+  }
+
 }
 
-/* ============================================================================
-   HEIGHT-BASED RESPONSIVE DESIGN FOR SMALL MOBILE SCREENS (v0.4.0)
-   Progressive reductions in typography and spacing for phones with limited
-   vertical space (iPhone SE, small Android devices). Ensures "Learn More"
-   buttons and other UI elements remain visible and accessible.
-   ============================================================================ */
+// ── Phone-height side card ────────────────────────────────────────────────────
+// EN: When the viewport is too short for a bottom card (height ≤ 480px), the
+//     side-card geometry applies instead, at any width. The same height is the
+//     vertical layout's height clause, so a phone on its side and a desktop
+//     window this short are both in the vertical layout here.
+//     isPhoneHeightSideCard() in layout-mode.js tests the same height alone, and
+//     card-pool.js sizes the card to its content on that test. The rule comes
+//     after the vertical-layout block so that it overrides the bottom card's
+//     rules of the same specificity.
+//     Threshold 480px catches all modern phones on their side (≤ 430px tall)
+//     and misses all portrait phones (iPhone SE 667px, SE 1st-gen 568px).
+//     card-pool.js sets `top` as an inline style with !important;
+//     bottom: auto releases the bottom anchor so the side card positions correctly.
+// ES: Cuando el viewport es demasiado bajo para una tarjeta inferior (altura
+//     ≤ 480px), se aplica en su lugar la geometría de tarjeta lateral, sea cual
+//     sea el ancho. Ese mismo umbral es la condición de altura del diseño
+//     vertical, así que aquí tanto un teléfono de lado como una ventana de
+//     escritorio de esa altura usan el diseño vertical.
+//     `isPhoneHeightSideCard()`, en layout-mode.js, comprueba solo esa
+//     altura, y card-pool.js usa esa comprobación para ajustar la altura de
+//     la tarjeta a su contenido. La regla va después del bloque
+//     `@include vertical-layout` para anular las reglas de la tarjeta
+//     inferior que tienen la misma especificidad.
+//     El umbral de 480px abarca todos los teléfonos modernos de lado
+//     (≤ 430px de alto) y deja por fuera todos los teléfonos en orientación
+//     vertical (iPhone SE 667px, SE 1.ª gen. 568px). card-pool.js asigna
+//     `top` como estilo en línea con `!important`; `bottom: auto` suelta el
+//     ancla inferior para que la tarjeta lateral quede donde la pone ese `top`.
+@media (max-height: $telar-card-landscape-max-height) {
+  .text-card {
+    left: $telar-card-side-left;
+    width: $telar-card-side-width;
+    top: auto !important;     // seam: card-pool sets top via style.setProperty('top', ..., 'important')
+    bottom: auto;
+    // EN: content-height side card — override the inline `height: viewportH*0.80`
+    //     that card-pool.js sets for the tall portrait/desktop card; a
+    //     viewport this short must size the card to its content, and card-pool
+    //     then centres it by the measured height.
+    // ES: Tarjeta lateral de altura según contenido: anula el `height` en línea
+    //     (`viewportH*0.80`) que card-pool.js asigna a la tarjeta alta de los
+    //     teléfonos en orientación vertical y del escritorio. En un viewport tan
+    //     bajo, la tarjeta tiene que tomar la altura de su contenido, y luego
+    //     card-pool.js la centra según la altura medida.
+    height: auto !important;
+    // EN: The cap is the viewport less the card's inset at top and bottom, so the
+    //     side card can use nearly the whole viewport. It is the fallback
+    //     before card-pool.js has run its geometry: once it has, an inline
+    //     max-height overrides it. card-pool.js writes the ceiling that keeps
+    //     the card clear of the top controls, the side card's ceiling from
+    //     card-fit.js, and the card scrolls inside itself past it. A cap of 40dvh is
+    //     the portrait bottom card's share of a tall viewport and leaves a
+    //     phone-height side card far too short; no cap at all lets the content-height card
+    //     grow past both edges of a 430px viewport, from where nothing brings it
+    //     back.
+    // ES: El tope es la altura del viewport menos la separación de la tarjeta
+    //     arriba y abajo, así que la tarjeta lateral puede ocupar casi toda la
+    //     altura de un viewport tan bajo. Es el valor de reserva mientras
+    //     card-pool.js no ha calculado la geometría; después, un `max-height`
+    //     en línea lo reemplaza. card-pool.js escribe el límite que mantiene la
+    //     tarjeta por debajo de los controles superiores (el de la tarjeta
+    //     lateral, que sale de card-fit.js), y si el contenido lo supera, se
+    //     desplaza dentro de la tarjeta. Un tope de 40dvh es la porción de un
+    //     viewport alto que le toca a la tarjeta inferior en vertical, y deja la
+    //     tarjeta lateral demasiado corta; sin tope alguno, la tarjeta de
+    //     altura según contenido crece hasta salirse por arriba y por abajo
+    //     de un viewport de 430px, de donde nada la devuelve al área visible.
+    max-height: calc(100vh - 2rem);
 
-/* Tier 1: Small Mobile - phones with 700px or less height */
-@media (max-width: 768px) and (max-height: 700px) {
-  .story-step {
-    padding: 1.3rem !important;
-  }
-
-  .story-step h2 {
-    font-size: 1.5rem;
-    margin-bottom: 0.9rem;
-  }
-
-  .story-step p {
-    font-size: 1rem;
-    margin-bottom: 1.3rem;
-  }
-
-  .panel-trigger {
-    font-size: 0.85rem;
-    padding: 0.45rem 1.1rem;
-  }
-}
-
-/* Tier 2: Tiny Mobile - phones with 667px or less height (iPhone SE, etc.) */
-@media (max-width: 768px) and (max-height: 667px) {
-  /* Adjust viewer:panel ratio from 60:40 to 55:45 for more step panel space */
-  .viewer-column {
-    flex: 0 0 55vh !important;
-    height: 55vh !important;
-  }
-
-  .narrative-column {
-    flex: 0 0 45vh !important;
-    height: 45vh !important;
-  }
-
-  .story-steps {
-    min-height: 45vh !important;
-  }
-
-  .story-step {
-    min-height: 45vh !important;
-    max-height: 45vh !important;
-    padding: 1.2rem !important;
-  }
-
-  .story-step h2 {
-    font-size: 1.4rem;
-    margin-bottom: 0.85rem;
-  }
-
-  .story-step p {
-    font-size: 0.95rem;
-    margin-bottom: 1.2rem;
-  }
-
-  .panel-trigger {
-    font-size: 0.8rem;
-    padding: 0.4rem 1rem;
-  }
-
-  /* Navigation buttons - smaller for tiny screens */
-  .mobile-nav button {
-    width: 45px !important;
-    height: 45px !important;
-  }
-}
-
-/* Tier 3: Micro Mobile - very small Android phones with 600px or less height */
-@media (max-width: 768px) and (max-height: 600px) {
-  /* Maintain 55:45 ratio, further reduce typography */
-  .story-step {
-    padding: 1rem !important;
-  }
-
-  .story-step h2 {
-    font-size: 1.25rem;
-    margin-bottom: 0.75rem;
-  }
-
-  .story-step p {
-    font-size: 0.9rem;
-    margin-bottom: 1rem;
-  }
-
-  .panel-trigger {
-    font-size: 0.75rem;
-    padding: 0.35rem 0.9rem;
-  }
-
-  /* Navigation buttons - smaller for micro screens */
-  .mobile-nav button {
-    width: 45px !important;
-    height: 45px !important;
+    // The dvh value sits inside the phone-height block, in the same shape as the
+    // vh-then-dvh pattern above, so the cap and its fallback stay together.
+    @supports (height: 100dvh) {
+      max-height: calc(100dvh - 2rem);
+    }
   }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   STORY UNLOCK OVERLAY (v0.8.0 - Protected Stories)
-
-   "The Sealed Archive" — A refined, mysterious unlock experience that feels
-   like approaching a locked manuscript case in a rare books library.
-   ═══════════════════════════════════════════════════════════════════════════ */
+// ═══════════════════════════════════════════════════════════════════════════════
+// STORY UNLOCK OVERLAY (protected stories)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 .story-unlock-overlay {
   position: fixed;
@@ -576,11 +1204,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 9999;
+  z-index: 99999;
   opacity: 0;
   transition: opacity 0.4s ease;
-
-  /* Simple solid background using theme colour */
   background: var(--color-panel-layer2-bg, #3d2645);
 
   &.show {
@@ -637,7 +1263,6 @@
   transition: opacity 0.4s ease, transform 0.4s ease;
 }
 
-/* Minimalist keyhole icon */
 .unlock-icon {
   margin-bottom: 2rem;
   opacity: 0;
@@ -720,9 +1345,11 @@
       cursor: pointer;
       transition: all 0.25s ease;
 
-      &:hover {
-        background: rgba(255, 255, 255, 0.15);
-        color: rgba(255, 255, 255, 0.9);
+      @media (hover: hover) and (pointer: fine) {
+        &:hover {
+          background: rgba(255, 255, 255, 0.15);
+          color: rgba(255, 255, 255, 0.9);
+        }
       }
 
       i {
@@ -755,12 +1382,14 @@
   border-radius: 50px;
   cursor: pointer;
   background: var(--color-button-bg);
-  color: var(--color-button-text);
+  color: var(--color-on-button);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 
-  &:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
   }
 
   &:active {
@@ -780,9 +1409,11 @@
   transition: all 0.25s ease;
   opacity: 0;
 
-  &:hover {
-    color: rgba(245, 240, 232, 0.85);
-    background: rgba(245, 240, 232, 0.05);
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      color: rgba(245, 240, 232, 0.85);
+      background: rgba(245, 240, 232, 0.05);
+    }
   }
 }
 
@@ -793,25 +1424,15 @@
 }
 
 @keyframes unlock-success {
-  0% {
-    transform: scale(1);
-  }
-  30% {
-    transform: scale(1.15) rotate(-5deg);
-  }
-  60% {
-    transform: scale(1.1) rotate(3deg);
-  }
-  100% {
-    transform: scale(1);
-    opacity: 0.6;
-  }
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.15) rotate(-5deg); }
+  60%  { transform: scale(1.1) rotate(3deg); }
+  100% { transform: scale(1); opacity: 0.6; }
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Mobile Responsive — Compact Unlock Overlay
-   ───────────────────────────────────────────────────────────────────────────── */
-@media (max-width: 768px) {
+// ── Mobile Responsive — Compact Unlock Overlay ───────────────────────────────
+
+@include vertical-layout {
   .unlock-content {
     padding: 2rem 1.5rem;
     max-width: 90%;
@@ -840,9 +1461,8 @@
   }
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Embed Mode — Extra Compact
-   ───────────────────────────────────────────────────────────────────────────── */
+// ── Embed Mode — Extra Compact Unlock ────────────────────────────────────────
+
 .embed-mode .story-unlock-overlay {
   .unlock-content {
     padding: 1.5rem;
@@ -866,3 +1486,5 @@
     margin-bottom: 1.5rem;
   }
 }
+
+} // end @layer telar-components

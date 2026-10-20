@@ -3,6 +3,37 @@ layout: default
 title: Home
 ---
 
+{%- comment -%}
+  Index layout — the site's home page, rendered inside the default shell. Its job is to
+  welcome visitors, surface any configuration problems an author needs to fix, and present
+  the site's stories and objects as browsable cards.
+
+  What it renders — a project title and tagline, optional description and free-text page
+  content, then a block of author-facing validation warnings gathered "all in one place":
+  IIIF base-URL issues, theme problems (missing, malformed, or a broken theme system, each
+  with remediation guidance and a default-theme fallback note), Google Sheets misconfiguration,
+  and per-object / per-story configuration warnings. Below the warnings it lays out the content
+  grids, then closes with a JSON island of story metadata and the client scripts that lazily
+  load thumbnails from IIIF (explicit thumbnail, remote manifest, or local info.json, in that
+  priority order) and prefetch a story's manifests on card hover.
+
+  Key context — `site.stories` and `site.objects` are the two collections shown; each story's
+  `data_file` resolves to its step data under `site.data`, whose first row may be `_metadata`
+  carrying viewer warnings, and whose `encrypted` flag swaps the card thumbnail for a keyhole.
+  `lang` (from `site.telar_language`, English fallback) supplies every string. Theme/Sheets
+  validation reads `site.telar_theme` and `site.google_sheets`.
+
+  Non-obvious behaviour — the page has two distinct layouts chosen at build time. Collection
+  mode (`site.collection_mode`, v1.1.0) leads with a large objects grid (the `is_featured_sample`
+  objects, or the first eight as a fallback) and demotes stories to a small grid below; it falls
+  back to the classic stories-first default mode when collection_mode is off, when
+  `skip_collections` fires, or when there are no objects to show. Visibility is further gated by
+  development flags (`skip_stories`/`skip_collections`, with legacy `hide_*` aliases) and by the
+  `story_interface` / `collection_interface` homepage toggles. Story-card thumbnails reuse the
+  story's first image step (falling back to its first video/audio) so the grid mirrors the
+  story's opening object.
+{%- endcomment -%}
+
 {% if site.telar_language and site.data.languages[site.telar_language] %}
   {% assign lang = site.data.languages[site.telar_language] %}
 {% else %}
@@ -69,7 +100,6 @@ title: Home
   <!-- Google Sheets Validation -->
   {% assign has_gs_issue = false %}
   {% assign gs_error_type = "" %}
-  {% assign gs_error_details = "" %}
 
   {% if site.google_sheets.enabled %}
     {% assign published_url = site.google_sheets.published_url | strip %}
@@ -101,8 +131,10 @@ title: Home
     {% endif %}
   {% endfor %}
 
-  {%- comment -%}Collect stories with warnings{%- endcomment -%}
+  {%- comment -%}Collect stories with warnings. Protected stories are
+      skipped: their warnings belong behind the unlock gate.{%- endcomment -%}
   {% for story in site.stories %}
+    {% if story.protected %}{% continue %}{% endif %}
     {% assign story_data = site.data[story.data_file] %}
     {% if story_data.size > 0 and story_data[0]._metadata %}
       {% assign metadata = story_data[0] %}
@@ -113,21 +145,21 @@ title: Home
   {% endfor %}
 
   {%- comment -%}Google Sheets Warnings{%- endcomment -%}
-  {% if has_gs_issue %}
+  {% if has_gs_issue and site['development-features'].hide_warnings != true %}
   <div class="row">
     <div class="col-lg-11 mx-auto">
       {% if gs_error_type == "missing_urls" %}
       <div class="alert alert-warning telar-alert" role="alert">
-        <strong>⚠️ Your Google Sheets integration is incomplete</strong>
+        <strong>{{ lang.errors.google_sheets.incomplete_heading | default: "⚠️ Your Google Sheets integration is incomplete" }}</strong>
         <p class="mb-0 mt-2">
-          Google Sheets integration is enabled but the <code>published_url</code> is missing from <code>_config.yml</code>. To get this URL: open your Google Sheet, go to File → Share → Publish to web, select "Entire document" and "Comma-separated values (.csv)", then click Publish and copy the URL.
+          {{ lang.errors.google_sheets.incomplete_description | default: 'Google Sheets integration is enabled but the <code>published_url</code> is missing from <code>_config.yml</code>. To get this URL: open your Google Sheet, go to File → Share → Publish to web, select "Entire document" and "Comma-separated values (.csv)", then click Publish and copy the URL.' }}
         </p>
       </div>
       {% elsif gs_error_type == "malformed_published" %}
       <div class="alert alert-warning telar-alert" role="alert">
-        <strong>⚠️ Your Google Sheets published URL is incorrect</strong>
+        <strong>{{ lang.errors.google_sheets.malformed_published_heading | default: "⚠️ Your Google Sheets published URL is incorrect" }}</strong>
         <p class="mb-0 mt-2">
-          Your Google Sheets <code>published_url</code> in <code>_config.yml</code> doesn't match the expected format. It should look like: <code>https://docs.google.com/spreadsheets/d/e/{PUBLISHED_ID}/pubhtml</code>. Get this URL from File → Share → Publish to web. Make sure to select "Entire document" and "Comma-separated values (.csv)", then enable "Automatically republish when changes are made" before clicking Publish.
+          {{ lang.errors.google_sheets.invalid_published | default: "Your Google Sheets <code>published_url</code> in <code>_config.yml</code> doesn't match the expected format. It should look like: <code>https://docs.google.com/spreadsheets/d/e/PUBLISHED_ID/pubhtml</code>. Get this URL from File → Share → Publish to web. Make sure to select &quot;Entire document&quot; and &quot;Comma-separated values (.csv)&quot;, then enable &quot;Automatically republish when changes are made&quot; before clicking Publish." }}
         </p>
       </div>
       {% endif %}
@@ -136,28 +168,28 @@ title: Home
   {% endif %}
 
   {%- comment -%}Theme Warnings{%- endcomment -%}
-  {% if has_theme_issue %}
+  {% if has_theme_issue and site['development-features'].hide_warnings != true %}
   <div class="row">
     <div class="col-lg-11 mx-auto">
       {% if theme_error_type == "not_found" %}
       <div class="alert alert-warning telar-alert" role="alert">
-        <strong>⚠️ Your selected theme doesn't exist</strong>
+        <strong>{{ lang.errors.theme.not_found_heading | default: "⚠️ Your selected theme doesn't exist" }}</strong>
         <p class="mb-0 mt-2">
-          The theme <code>{{ site.telar_theme }}</code> doesn't exist. We've applied the <code>trama</code> (default) theme instead. To choose a different theme, update <code>telar_theme</code> in <code>_config.yml</code> to match a file in your <code>_data/themes</code> folder. Built-in options include <code>trama</code>, <code>paisajes</code>, <code>neogranadina</code>, <code>santa-barbara</code>, and <code>austin</code>.
+          {{ lang.errors.theme.not_found_description | default: "The theme <code>__THEME__</code> doesn't exist. We've applied the <code>trama</code> (default) theme instead. To choose a different theme, update <code>telar_theme</code> in <code>_config.yml</code> to match a file in your <code>_data/themes</code> folder. Built-in options include <code>trama</code>, <code>paisajes</code>, <code>neogranadina</code>, <code>santa-barbara</code>, and <code>austin</code>." | replace: "__THEME__", site.telar_theme }}
         </p>
       </div>
       {% elsif theme_error_type == "malformed" %}
       <div class="alert alert-warning telar-alert" role="alert">
-        <strong>⚠️ Your theme file is broken</strong>
+        <strong>{{ lang.errors.theme.broken_heading | default: "⚠️ Your theme file is broken" }}</strong>
         <p class="mb-0 mt-2">
-          The theme <code>{{ site.telar_theme }}</code> file appears to be broken or incomplete. We've applied a built-in fallback theme instead. Check <code>_data/themes/{{ site.telar_theme }}.yml</code> for syntax errors or compare it to a working theme file.
+          {{ lang.errors.theme.broken | default: "The theme <code>__THEME__</code> file appears to be broken or incomplete. We've applied a built-in fallback theme instead. Check <code>_data/themes/__THEME__.yml</code> for syntax errors or compare it to a working theme file." | replace: "__THEME__", site.telar_theme }}
         </p>
       </div>
       {% elsif theme_error_type == "critical" %}
       <div class="alert alert-warning telar-alert" role="alert">
-        <strong>⚠️ Theme system error detected</strong>
+        <strong>{{ lang.errors.theme.system_error_heading | default: "⚠️ Theme system error detected" }}</strong>
         <p class="mb-0 mt-2">
-          We encountered a problem loading themes. The <code>_data/themes</code> folder may be missing or damaged. The site is currently using basic default styling. Please check that your <code>_data/themes</code> folder contains valid theme files, or restore it from your repository.
+          {{ lang.errors.theme.system_error_description | default: "We encountered a problem loading themes. The <code>_data/themes</code> folder may be missing or damaged. The site is currently using basic default styling. Please check that your <code>_data/themes</code> folder contains valid theme files, or restore it from your repository." }}
         </p>
       </div>
       {% endif %}
@@ -166,11 +198,11 @@ title: Home
   {% endif %}
 
   {%- comment -%}Object Warnings{%- endcomment -%}
-  {% if has_object_issues %}
+  {% if has_object_issues and site['development-features'].hide_warnings != true %}
   <div class="row">
     <div class="col-lg-11 mx-auto">
       <div class="alert alert-warning telar-alert" role="alert">
-        <strong>⚠️ Object configuration issues detected</strong>
+        <strong>{{ lang.errors.object_config_heading | default: "⚠️ Object configuration issues detected" }}</strong>
         <ul class="mt-2 mb-0">
           {% for object in site.objects %}
             {% if object.object_warning and object.object_warning != "" %}
@@ -186,17 +218,17 @@ title: Home
   {% endif %}
 
   {%- comment -%}Story Warnings{%- endcomment -%}
-  {% if stories_with_issues.size > 0 %}
+  {% if stories_with_issues.size > 0 and site['development-features'].hide_warnings != true %}
   <div class="row">
     <div class="col-lg-11 mx-auto">
       <div class="alert alert-warning telar-alert" role="alert">
-        <strong>⚠️ Story configuration issues detected</strong>
+        <strong>{{ lang.errors.story_config_heading | default: "⚠️ Story configuration issues detected" }}</strong>
         <p class="mb-0 mt-2">
           {% assign second_to_last = stories_with_issues.size | minus: 1 %}
-          Navigate to
+          {{ lang.errors.story_navigate_to | default: "Navigate to" }}
           {% for story in stories_with_issues %}
-            <a href="{{ story.url | relative_url }}" class="alert-link">{{ story.title }}</a>{% unless forloop.last %}{% if forloop.index == second_to_last %} or {% else %}, {% endif %}{% endunless %}
-          {% endfor %} to see more details.
+            <a href="{{ story.url | relative_url }}" class="alert-link">{{ story.title }}</a>{% unless forloop.last %}{% if forloop.index == second_to_last %} {{ lang.errors.story_or | default: "or" }} {% else %}, {% endif %}{% endunless %}
+          {% endfor %} {{ lang.errors.story_see_details | default: "to see more details." }}
         </p>
       </div>
     </div>
@@ -218,6 +250,7 @@ title: Home
   {% assign dev_features = site['development-features'] %}
   {%- comment -%}Support both new names (skip_*) and legacy names (hide_*){%- endcomment -%}
   {% assign skip_stories = dev_features.skip_stories | default: dev_features.hide_stories | default: false %}
+  {% comment %}This skip_collections alias is also computed in _includes/header.html and _layouts/objects-index.html — one line each, not worth an include{% endcomment %}
   {% assign skip_collections = dev_features.skip_collections | default: dev_features.hide_collections | default: false %}
   {% if skip_collections %}{% assign skip_stories = true %}{% endif %}
 
@@ -225,11 +258,200 @@ title: Home
   {% assign story_show_on_homepage = site.story_interface.show_on_homepage | default: true %}
   {% assign collection_show_link = site.collection_interface.show_link_on_homepage | default: true %}
 
+  {%- comment -%}
+    Collection mode (v1.1.0): when site.collection_mode is true,
+    the homepage leads with a large objects grid (up to 8, sourced from is_featured_sample
+    with a fallback to the first 8 objects) and places stories below in a small grid.
+    Falls back to default mode if there are no objects to show or if skip_collections
+    is true. Flag lives at the top level of _config.yml (Site Settings block).
+  {%- endcomment -%}
+  {% assign collection_mode_flag = site.collection_mode | default: false %}
+  {% assign collection_mode_active = false %}
+  {% if collection_mode_flag and skip_collections == false and site.objects.size > 0 %}
+    {% assign collection_mode_active = true %}
+  {% endif %}
+
+  {%- comment -%}Compute the curated large-grid object list (collection mode only){%- endcomment -%}
+  {% assign collection_featured = site.objects | where: "is_featured_sample", true %}
+  {% if collection_featured.size == 0 %}
+    {%- comment -%}Empty-featured fallback — use first 8 objects in default sort order{%- endcomment -%}
+    {% assign collection_featured = site.objects %}
+  {% endif %}
+  {% assign collection_featured = collection_featured | slice: 0, 8 %}
+
+  {% if collection_mode_active %}
+    {%- comment -%}
+      COLLECTION MODE LAYOUT (v1.1.0)
+      Overrides story_interface.show_on_homepage and
+      collection_interface.show_link_on_homepage / show_sample_on_homepage.
+    {%- endcomment -%}
+
+    <!-- Large Objects Grid (collection mode, top) -->
+    <div class="row">
+      <div class="col-lg-11 mx-auto">
+        <h2 class="mb-4">{{ lang.pages.collection_mode_heading | default: "Explore the collection" }}</h2>
+        <div class="row row-cols-1 row-cols-md-2 row-cols-lg-4 g-5">
+          {% for object in collection_featured %}
+          <div class="col">
+            <a href="{{ object.url | relative_url }}" class="story-card text-decoration-none">
+              <div class="card h-100 border-0 shadow-sm">
+                {% if object.media_type == 'Video' %}
+                  <div class="card-img-top video-thumbnail" aria-label="{{ lang.objects.media_video | default: 'Video' }}" style="aspect-ratio: 1;">
+                    <svg class="media-type-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                  </div>
+                {% elsif object.media_type == 'Audio' %}
+                  <div class="card-img-top audio-thumbnail" aria-label="{{ lang.objects.media_audio | default: 'Audio' }}" style="aspect-ratio: 1;">
+                    <svg class="media-type-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                  </div>
+                {% else %}
+                  {%- comment -%}
+                    All image objects route through .story-iiif-thumbnail so the existing
+                    client-side IIIF loader handles the priority chain:
+                      1. explicit object.thumbnail (upgraded via TelarIIIF.upgradeIIIFThumbnailUrl)
+                      2. remote IIIF manifest (fetched, parsed, sized for level0/level1+)
+                      3. local info.json for locally-generated tiles
+                    Do NOT add a raw <img src="{{ object.thumbnail }}"> branch here — it
+                    bypasses the upgrade/derive chain and produces tiny or broken thumbnails
+                    for IIIF-backed objects whose CSV thumbnails use !96,96 or similar.
+                  {%- endcomment -%}
+                  <div class="story-iiif-thumbnail card-img-top" data-object-id="{{ object.object_id }}" data-info-json="{{ '/iiif/objects/' | append: object.object_id | append: '/info.json' | relative_url }}" style="aspect-ratio: 1; overflow: hidden;">
+                    <div class="manifest-thumbnail-placeholder bg-light d-flex align-items-center justify-content-center h-100">
+                      <span class="text-muted">{{ lang.loading | default: "Loading..." }}</span>
+                    </div>
+                  </div>
+                {% endif %}
+                <div class="card-body">
+                  <h3>{{ object.title }}</h3>
+                  {% if object.period and object.period != "" %}
+                  <p class="story-card-byline">{{ object.period }}</p>
+                  {% elsif object.creator and object.creator != "" %}
+                  <p class="story-card-byline">{{ object.creator }}</p>
+                  {% endif %}
+                </div>
+              </div>
+            </a>
+          </div>
+          {% endfor %}
+        </div>
+        <a href="{{ '/objects/' | relative_url }}" class="btn btn-primary mt-4">{{ lang.buttons.view_objects | default: "View all objects" }}</a>
+      </div>
+    </div>
+
+    <!-- Small Stories Grid (collection mode, bottom) -->
+    {%- comment -%}Collection mode overrides story_interface.show_on_homepage; suppress entirely if no stories.{%- endcomment -%}
+    {% unless skip_stories %}
+    {% if site.stories.size > 0 %}
+    <div class="row mt-5">
+      <div class="col-lg-11 mx-auto">
+        <h3 class="mb-4">{{ page.stories_heading | default: lang.pages.stories_heading | default: "Explore the stories" }}</h3>
+        {% assign sorted_stories = site.stories | sort: "sort_order" %}
+        <div class="featured-objects-grid collection-mode-stories">
+          {% for story in sorted_stories %}
+          {% assign story_data = site.data[story.data_file] %}
+          {% assign is_encrypted = false %}
+          {%- comment -%}Keyed on frontmatter: the data file is plaintext
+              through the build and must not signal protection.
+          {%- endcomment -%}
+          {% if story.protected %}{% assign is_encrypted = true %}{% endif %}
+          <a href="{{ story.url | relative_url }}" class="collection-item{% if story.demo %} demo-story{% endif %}">
+            <div class="collection-thumbnail">
+              {% if story.demo %}
+              <span class="demo-badge">{{ lang.demo.badge }}</span>
+              {% endif %}
+              {% if is_encrypted %}
+                <div class="story-protected-thumbnail d-flex align-items-center justify-content-center">
+                  <svg viewBox="0 0 48 72" fill="none" xmlns="http://www.w3.org/2000/svg" class="protected-keyhole">
+                    <circle cx="24" cy="20" r="16" fill="#fff"/>
+                    <path d="M17 32L10 68H38L31 32H17Z" fill="#fff"/>
+                  </svg>
+                </div>
+              {% elsif story_data and story_data.size > 0 %}
+                {%- comment -%}Reuse the thumbnail discovery loop from the default stories section{%- endcomment -%}
+                {% assign thumb_obj = nil %}
+                {% assign thumb_step = nil %}
+                {% assign fallback_obj = nil %}
+                {% assign fallback_step = nil %}
+                {% for step in story_data %}
+                  {% if step.object and step.object != "" %}
+                    {% assign step_obj = site.objects | where: "object_id", step.object | first %}
+                    {% if step_obj %}
+                      {% if step_obj.media_type == 'Image' or step_obj.media_type == nil or step_obj.media_type == "" %}
+                        {% unless thumb_obj %}
+                          {% assign thumb_obj = step_obj %}
+                          {% assign thumb_step = step %}
+                        {% endunless %}
+                      {% else %}
+                        {% unless fallback_obj %}
+                          {% assign fallback_obj = step_obj %}
+                          {% assign fallback_step = step %}
+                        {% endunless %}
+                      {% endif %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {% unless thumb_obj %}
+                  {% assign thumb_obj = fallback_obj %}
+                  {% assign thumb_step = fallback_step %}
+                {% endunless %}
+                {% if thumb_obj %}
+                  {% if thumb_obj.media_type == 'Video' %}
+                    <div class="video-thumbnail" aria-label="{{ lang.objects.media_video | default: 'Video' }}">
+                      <svg class="media-type-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                    </div>
+                  {% elsif thumb_obj.media_type == 'Audio' %}
+                    <div class="audio-thumbnail" aria-label="{{ lang.objects.media_audio | default: 'Audio' }}">
+                      <svg class="media-type-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                    </div>
+                  {% else %}
+                    {% if thumb_step.page and thumb_step.page != "" %}
+                      {% assign thumb_info_path = '/iiif/objects/' | append: thumb_obj.object_id | append: '/page-' | append: thumb_step.page | append: '/info.json' %}
+                    {% else %}
+                      {% assign thumb_info_path = '/iiif/objects/' | append: thumb_obj.object_id | append: '/info.json' %}
+                    {% endif %}
+                    <div class="featured-iiif-thumbnail" data-object-id="{{ thumb_obj.object_id }}" data-info-json="{{ thumb_info_path | relative_url }}">
+                      <span class="thumbnail-placeholder">{{ story.title | truncate: 15 }}</span>
+                    </div>
+                  {% endif %}
+                {% else %}
+                  <div class="story-thumbnail-placeholder bg-secondary d-flex align-items-center justify-content-center">
+                    <span class="text-white">{{ story.title | truncate: 1, "" }}</span>
+                  </div>
+                {% endif %}
+              {% else %}
+                <div class="story-thumbnail-placeholder bg-secondary d-flex align-items-center justify-content-center">
+                  <span class="text-white">{{ story.title | truncate: 1, "" }}</span>
+                </div>
+              {% endif %}
+            </div>
+            <div class="collection-info">
+              <h4 class="collection-title">{{ story.title }}</h4>
+              {% if is_encrypted %}
+              <p class="collection-meta">{{ lang.unlock.card_description | default: "Protected — key required" }}</p>
+              {% elsif story.byline %}
+              <p class="collection-meta">{{ story.byline | markdownify | strip_html | strip }}</p>
+              {% endif %}
+            </div>
+          </a>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+    {% endunless %}
+
+  {% else %}
+    {%- comment -%}
+      The stories-first layout, shown when collection_mode is off.
+      This branch is entered whenever collection_mode is false/absent, or when
+      collection_mode is true but skip_collections fires or there are no
+      objects to show.
+    {%- endcomment -%}
+
   <!-- Stories List (hidden when skip_stories enabled or show_on_homepage: false) -->
   {% unless skip_stories or story_show_on_homepage == false %}
   <div class="row">
     <div class="col-lg-11 mx-auto">
-      <h2 class="mb-4">{{ page.stories_heading | default: "Explore the stories" }}</h2>
+      <h2 class="mb-4">{{ page.stories_heading | default: lang.pages.stories_heading | default: "Explore the stories" }}</h2>
       {% if page.stories_intro and page.stories_intro != "" %}
       <p class="lead mb-4">{{ page.stories_intro }}</p>
       {% endif %}
@@ -238,10 +460,12 @@ title: Home
       {% assign sorted_stories = site.stories | sort: "sort_order" %}
       <div class="row row-cols-1 row-cols-md-2 row-cols-lg-4 g-5">
         {% for story in sorted_stories %}
-        {%- comment -%}Load story data file and check if encrypted{%- endcomment -%}
+        {%- comment -%}Load story data for the thumbnail fallback; protection
+            is keyed on frontmatter (the data file is plaintext through the
+            build and must not signal protection).{%- endcomment -%}
         {% assign story_data = site.data[story.data_file] %}
         {% assign is_encrypted = false %}
-        {% if story_data.encrypted %}
+        {% if story.protected %}
           {% assign is_encrypted = true %}
         {% endif %}
         <div class="col">
@@ -259,30 +483,67 @@ title: Home
                   </svg>
                 </div>
               {% elsif story_data and story_data.size > 0 %}
-                {% assign first_step = story_data[0] %}
-                {% if first_step.object %}
-                  {%- comment -%}Load thumbnail with object ID for remote/local detection.
-                  For multi-page objects (PDFs), use the specific page's info.json.{%- endcomment -%}
-                  {% if first_step.page and first_step.page != "" %}
-                    {% assign thumb_info_path = '/iiif/objects/' | append: first_step.object | append: '/page-' | append: first_step.page | append: '/info.json' %}
-                  {% else %}
-                    {% assign thumb_info_path = '/iiif/objects/' | append: first_step.object | append: '/info.json' %}
+                {%- comment -%}Find best thumbnail object: prefer first Image, fall back to first video/audio{%- endcomment -%}
+                {% assign thumb_obj = nil %}
+                {% assign thumb_step = nil %}
+                {% assign fallback_obj = nil %}
+                {% assign fallback_step = nil %}
+                {% for step in story_data %}
+                  {% if step.object and step.object != "" %}
+                    {% assign step_obj = site.objects | where: "object_id", step.object | first %}
+                    {% if step_obj %}
+                      {% if step_obj.media_type == 'Image' or step_obj.media_type == nil or step_obj.media_type == "" %}
+                        {% unless thumb_obj %}
+                          {% assign thumb_obj = step_obj %}
+                          {% assign thumb_step = step %}
+                        {% endunless %}
+                      {% else %}
+                        {% unless fallback_obj %}
+                          {% assign fallback_obj = step_obj %}
+                          {% assign fallback_step = step %}
+                        {% endunless %}
+                      {% endif %}
+                    {% endif %}
                   {% endif %}
-                  <div class="story-iiif-thumbnail card-img-top" data-object-id="{{ first_step.object }}" data-info-json="{{ thumb_info_path | relative_url }}" style="aspect-ratio: 1; overflow: hidden;">
-                    <div class="manifest-thumbnail-placeholder bg-light d-flex align-items-center justify-content-center h-100">
-                      <span class="text-muted">Loading...</span>
+                {% endfor %}
+                {%- comment -%}Use image object if found, otherwise fall back to video/audio{%- endcomment -%}
+                {% unless thumb_obj %}
+                  {% assign thumb_obj = fallback_obj %}
+                  {% assign thumb_step = fallback_step %}
+                {% endunless %}
+
+                {% if thumb_obj %}
+                  {% if thumb_obj.media_type == 'Video' %}
+                    <div class="card-img-top video-thumbnail" aria-label="{{ lang.objects.media_video | default: 'Video' }}" style="aspect-ratio: 1;">
+                      <svg class="media-type-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
                     </div>
-                  </div>
+                  {% elsif thumb_obj.media_type == 'Audio' %}
+                    <div class="card-img-top audio-thumbnail" aria-label="{{ lang.objects.media_audio | default: 'Audio' }}" style="aspect-ratio: 1;">
+                      <svg class="media-type-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                    </div>
+                  {% else %}
+                    {%- comment -%}Image object — load via IIIF thumbnail{%- endcomment -%}
+                    {% if thumb_step.page and thumb_step.page != "" %}
+                      {% assign thumb_info_path = '/iiif/objects/' | append: thumb_obj.object_id | append: '/page-' | append: thumb_step.page | append: '/info.json' %}
+                    {% else %}
+                      {% assign thumb_info_path = '/iiif/objects/' | append: thumb_obj.object_id | append: '/info.json' %}
+                    {% endif %}
+                    <div class="story-iiif-thumbnail card-img-top" data-object-id="{{ thumb_obj.object_id }}" data-info-json="{{ thumb_info_path | relative_url }}" style="aspect-ratio: 1; overflow: hidden;">
+                      <div class="manifest-thumbnail-placeholder bg-light d-flex align-items-center justify-content-center h-100">
+                        <span class="text-muted">{{ lang.loading | default: "Loading..." }}</span>
+                      </div>
+                    </div>
+                  {% endif %}
                 {% else %}
-                  {%- comment -%}Fallback placeholder if no object{%- endcomment -%}
+                  {%- comment -%}Fallback placeholder if no object found{%- endcomment -%}
                   <div class="story-thumbnail-placeholder bg-secondary d-flex align-items-center justify-content-center" style="aspect-ratio: 1;">
-                    <span class="text-white">{{ story.story_number }}</span>
+                    <span class="text-white">{{ story.title | truncate: 1, "" }}</span>
                   </div>
                 {% endif %}
               {% else %}
                 {%- comment -%}Fallback placeholder if no data file{%- endcomment -%}
                 <div class="story-thumbnail-placeholder bg-secondary d-flex align-items-center justify-content-center" style="aspect-ratio: 1;">
-                  <span class="text-white">{{ story.story_number }}</span>
+                  <span class="text-white">{{ story.title | truncate: 1, "" }}</span>
                 </div>
               {% endif %}
 
@@ -301,7 +562,7 @@ title: Home
       </div>
       {% else %}
       <div class="alert alert-info">
-        <p class="mb-0">No stories available yet. Create story files in the <code>_stories/</code> directory to get started.</p>
+        <p class="mb-0">{{ lang.empty_states.no_stories }}</p>
       </div>
       {% endif %}
     </div>
@@ -313,7 +574,7 @@ title: Home
   {% if site.objects.size > 0 %}
   <div class="row mt-5">
     <div class="col-lg-11 mx-auto">
-      <h3 class="mb-4">{{ page.objects_heading | default: "See the objects behind the stories" }}</h3>
+      <h3 class="mb-4">{{ page.objects_heading | default: lang.pages.objects_heading | default: "See the objects behind the stories" }}</h3>
       {% assign featured_objects = site.objects | where: "is_featured_sample", true %}
       {% assign show_featured = false %}
       {% if site.collection_interface.show_sample_on_homepage == true and featured_objects.size > 0 %}
@@ -353,8 +614,16 @@ title: Home
         {% for object in featured_objects %}
         <a href="{{ object.url | relative_url }}" class="collection-item">
           <div class="collection-thumbnail">
-            {% if object.thumbnail and object.thumbnail != "" %}
-              <img src="{{ object.thumbnail | relative_url }}" alt="{{ object.title }}" loading="lazy">
+            {% if object.media_type == 'Video' %}
+              <div class="video-thumbnail" aria-label="{{ lang.objects.media_video | default: 'Video' }}">
+                <svg class="media-type-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+              </div>
+            {% elsif object.media_type == 'Audio' %}
+              <div class="audio-thumbnail" aria-label="{{ lang.objects.media_audio | default: 'Audio' }}">
+                <svg class="media-type-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+              </div>
+            {% elsif object.thumbnail and object.thumbnail != "" %}
+              <img src="{{ object.thumbnail | relative_url }}" alt="{{ object.title }}" loading="lazy" class="iiif-thumbnail">
             {% else %}
               <div class="featured-iiif-thumbnail" data-object-id="{{ object.object_id }}" data-info-json="{{ '/iiif/objects/' | append: object.object_id | append: '/info.json' | relative_url }}">
                 <span class="thumbnail-placeholder">{{ object.title | truncate: 15 }}</span>
@@ -380,363 +649,35 @@ title: Home
   </div>
   {% endif %}
   {% endunless %}
+
+  {% endif %}
 </div>
 
 <script id="telar-stories-data" type="application/json">
 [
   {% for story in site.stories %}
-  {% assign story_data = site.data[story.data_file] %}
   {
     "title": {{ story.title | jsonify }},
     "url": "{{ story.url | absolute_url }}",
-    "protected": {% if story_data.encrypted %}true{% else %}false{% endif %}
+    "protected": {% if story.protected %}true{% else %}false{% endif %}
   }{% unless forloop.last %},{% endunless %}
   {% endfor %}
 ]
 </script>
 
-<script>
-// Pass objects data for manifest lookup
-window.objectsData = {{ site.data.objects | jsonify }};
-
-/**
- * Pick a thumbnail size from the IIIF sizes array.
- * Returns the smallest size >= minWidth, or the largest available.
- */
-function pickThumbnailSize(sizes, minWidth) {
-  if (!sizes || sizes.length === 0) return null;
-  minWidth = minWidth || 400;
-  var sorted = sizes.slice().sort(function(a, b) { return a.width - b.width; });
-  for (var i = 0; i < sorted.length; i++) {
-    if (sorted[i].width >= minWidth) return sorted[i];
+{%- comment -%}
+Everything the home page's JavaScript needs from Liquid, in one JSON block
+read by assets/js/home-page.js (bundled from assets/js/iiif-thumbnails/):
+the objects array, for manifest lookup by object id, and the one language
+string the cards show. jsonify quotes and escapes each value; the replace
+guards against a </script> breakout from CSV-derived text.
+{%- endcomment -%}
+<script id="telar-home-data" type="application/json">
+{
+  "objects": {{ site.data.objects | jsonify | replace: '</', '<\/' }},
+  "lang": {
+    "thumbnailLoadError": {{ lang.empty_states.thumbnail_load_error | jsonify }}
   }
-  return sorted[sorted.length - 1];
 }
-
-/**
- * Load story thumbnails from IIIF (remote manifests or local info.json)
- */
-document.addEventListener('DOMContentLoaded', function() {
-  const storyThumbnails = document.querySelectorAll('.story-iiif-thumbnail[data-object-id]');
-
-  storyThumbnails.forEach(function(item) {
-    const objectId = item.getAttribute('data-object-id');
-    const localInfoUrl = item.getAttribute('data-info-json');
-
-    // Find object in objectsData
-    const objectData = window.objectsData.find(obj => obj.object_id === objectId);
-
-    // First check if object has explicit thumbnail URL (best for level0 IIIF, also works as override)
-    if (objectData && objectData.thumbnail && objectData.thumbnail.trim() !== '') {
-      const img = document.createElement('img');
-      img.src = objectData.thumbnail;
-      img.alt = item.closest('.story-card').querySelector('h3').textContent;
-      img.style.width = '100%';
-      img.style.height = '100%';
-      img.style.objectFit = 'cover';
-
-      const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-      if (placeholder) {
-        placeholder.replaceWith(img);
-      }
-    }
-    // Check if object has remote IIIF manifest (for level2 servers that support dynamic sizing)
-    else if (objectData && objectData.iiif_manifest) {
-      // Remote manifest - fetch it and extract larger canvas image
-      fetch(objectData.iiif_manifest)
-        .then(response => response.json())
-        .then(manifest => {
-          let imageServiceUrl = null;
-          let imageServiceProfile = null;
-          let fallbackImageUrl = null;
-
-          // IIIF Presentation API 2.1
-          if (manifest.sequences && manifest.sequences[0] && manifest.sequences[0].canvases) {
-            const firstCanvas = manifest.sequences[0].canvases[0];
-            if (firstCanvas && firstCanvas.images && firstCanvas.images[0]) {
-              const resource = firstCanvas.images[0].resource;
-
-              // Try to get image service for resizing
-              if (resource.service) {
-                const service = Array.isArray(resource.service) ? resource.service[0] : resource.service;
-                imageServiceUrl = service['@id'] || service.id;
-                imageServiceProfile = service.profile;
-              }
-
-              // Fallback to full image URL
-              if (!imageServiceUrl && resource['@id']) {
-                fallbackImageUrl = resource['@id'];
-              }
-            }
-          }
-          // IIIF Presentation API 3.0
-          else if (manifest.items && manifest.items[0]) {
-            const firstCanvas = manifest.items[0];
-            if (firstCanvas.items && firstCanvas.items[0] && firstCanvas.items[0].items) {
-              const annotationBody = firstCanvas.items[0].items[0].body;
-
-              // Try to get image service for resizing
-              if (annotationBody.service && annotationBody.service.length > 0) {
-                imageServiceUrl = annotationBody.service[0].id || annotationBody.service[0]['@id'];
-                imageServiceProfile = annotationBody.service[0].profile;
-              }
-
-              // Fallback to full image URL
-              if (!imageServiceUrl && annotationBody.id) {
-                fallbackImageUrl = annotationBody.id;
-              }
-            }
-          }
-
-          const isLevel0 = imageServiceProfile && (
-            imageServiceProfile === 'level0' ||
-            imageServiceProfile === 'http://iiif.io/api/image/2/level0.json'
-          );
-
-          function replaceStoryPlaceholder(url) {
-            const img = document.createElement('img');
-            img.src = url;
-            img.alt = item.closest('.story-card').querySelector('h3').textContent;
-            img.style.width = '100%';
-            img.style.height = '100%';
-            img.style.objectFit = 'cover';
-            const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-            if (placeholder) placeholder.replaceWith(img);
-          }
-
-          // Level 0: fetch info.json to get available sizes
-          if (imageServiceUrl && isLevel0) {
-            imageServiceUrl = imageServiceUrl.replace(/\/$/, '');
-            fetch(`${imageServiceUrl}/info.json`)
-              .then(r => r.json())
-              .then(info => {
-                const sizes = info.sizes || [];
-                const largest = sizes.length > 0 ? sizes[sizes.length - 1] : null;
-                const url = largest
-                  ? `${imageServiceUrl}/full/${largest.width},${largest.height}/0/default.jpg`
-                  : fallbackImageUrl;
-                if (url) replaceStoryPlaceholder(url);
-              })
-              .catch(() => { if (fallbackImageUrl) replaceStoryPlaceholder(fallbackImageUrl); });
-          }
-          // Level 1+: request arbitrary size
-          else if (imageServiceUrl) {
-            imageServiceUrl = imageServiceUrl.replace(/\/$/, '');
-            replaceStoryPlaceholder(`${imageServiceUrl}/full/!400,400/0/default.jpg`);
-          }
-          else if (fallbackImageUrl) {
-            replaceStoryPlaceholder(fallbackImageUrl);
-          } else {
-            throw new Error('No image found in manifest');
-          }
-        })
-        .catch(error => {
-          console.error('Error loading remote IIIF manifest:', objectData.iiif_manifest, error);
-          const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-          if (placeholder) {
-            placeholder.innerHTML = '<span class="text-danger">Failed to load</span>';
-          }
-        });
-    } else {
-      // Local IIIF info.json
-      fetch(localInfoUrl)
-        .then(response => response.json())
-        .then(info => {
-          const sizes = info.sizes || [];
-          let thumbnailSize = pickThumbnailSize(sizes);
-
-          if (thumbnailSize) {
-            const baseUrl = info.id || info['@id'];
-            const thumbnailUrl = `${baseUrl}/full/${thumbnailSize.width},${thumbnailSize.height}/0/default.jpg`;
-
-            const img = document.createElement('img');
-            img.src = thumbnailUrl;
-            img.alt = item.closest('.story-card').querySelector('h3').textContent;
-            img.style.width = '100%';
-            img.style.height = '100%';
-            img.style.objectFit = 'cover';
-
-            const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-            if (placeholder) {
-              placeholder.replaceWith(img);
-            }
-          }
-        })
-        .catch(error => {
-          console.error('Error loading local IIIF info.json:', localInfoUrl, error);
-          const placeholder = item.querySelector('.manifest-thumbnail-placeholder');
-          if (placeholder) {
-            placeholder.innerHTML = '<span class="text-danger">Failed to load</span>';
-          }
-        });
-    }
-  });
-});
-
-/**
- * Load featured object thumbnails from local IIIF tiles
- */
-const featuredThumbnails = document.querySelectorAll('.featured-iiif-thumbnail[data-object-id]');
-featuredThumbnails.forEach(function(item) {
-  const objectId = item.getAttribute('data-object-id');
-  const localInfoUrl = item.getAttribute('data-info-json');
-
-  // Find object in objectsData for potential remote manifest
-  const objectData = window.objectsData.find(obj => obj.object_id === objectId);
-
-  // Check for explicit thumbnail first
-  if (objectData && objectData.thumbnail && objectData.thumbnail.trim() !== '') {
-    const img = document.createElement('img');
-    img.src = objectData.thumbnail;
-    img.alt = item.closest('.collection-item').querySelector('.collection-title').textContent;
-    img.style.width = '100%';
-    img.style.height = '100%';
-    img.style.objectFit = 'cover';
-    item.innerHTML = '';
-    item.appendChild(img);
-  }
-  // Check for remote IIIF manifest
-  else if (objectData && objectData.iiif_manifest) {
-    fetch(objectData.iiif_manifest)
-      .then(response => response.json())
-      .then(manifest => {
-        let imageServiceUrl = null;
-        let imageServiceProfile = null;
-        let fallbackImageUrl = null;
-
-        // IIIF Presentation API 2.1
-        if (manifest.sequences && manifest.sequences[0] && manifest.sequences[0].canvases) {
-          const firstCanvas = manifest.sequences[0].canvases[0];
-          if (firstCanvas && firstCanvas.images && firstCanvas.images[0]) {
-            const resource = firstCanvas.images[0].resource;
-            if (resource.service) {
-              const service = Array.isArray(resource.service) ? resource.service[0] : resource.service;
-              imageServiceUrl = service['@id'] || service.id;
-              imageServiceProfile = service.profile;
-            }
-            if (!imageServiceUrl && resource['@id']) {
-              fallbackImageUrl = resource['@id'];
-            }
-          }
-        }
-        // IIIF Presentation API 3.0
-        else if (manifest.items && manifest.items[0]) {
-          const firstCanvas = manifest.items[0];
-          if (firstCanvas.items && firstCanvas.items[0] && firstCanvas.items[0].items) {
-            const annotationBody = firstCanvas.items[0].items[0].body;
-            if (annotationBody.service && annotationBody.service.length > 0) {
-              imageServiceUrl = annotationBody.service[0].id || annotationBody.service[0]['@id'];
-              imageServiceProfile = annotationBody.service[0].profile;
-            }
-            if (!imageServiceUrl && annotationBody.id) {
-              fallbackImageUrl = annotationBody.id;
-            }
-          }
-        }
-
-        const isLevel0 = imageServiceProfile && (
-          imageServiceProfile === 'level0' ||
-          imageServiceProfile === 'http://iiif.io/api/image/2/level0.json'
-        );
-
-        function replaceFeaturedImg(url) {
-          const img = document.createElement('img');
-          img.src = url;
-          img.alt = item.closest('.collection-item').querySelector('.collection-title').textContent;
-          img.style.width = '100%';
-          img.style.height = '100%';
-          img.style.objectFit = 'cover';
-          item.innerHTML = '';
-          item.appendChild(img);
-        }
-
-        // Level 0: fetch info.json to get available sizes
-        if (imageServiceUrl && isLevel0) {
-          imageServiceUrl = imageServiceUrl.replace(/\/$/, '');
-          fetch(`${imageServiceUrl}/info.json`)
-            .then(r => r.json())
-            .then(info => {
-              const sizes = info.sizes || [];
-              const largest = sizes.length > 0 ? sizes[sizes.length - 1] : null;
-              const url = largest
-                ? `${imageServiceUrl}/full/${largest.width},${largest.height}/0/default.jpg`
-                : fallbackImageUrl;
-              if (url) replaceFeaturedImg(url);
-            })
-            .catch(() => { if (fallbackImageUrl) replaceFeaturedImg(fallbackImageUrl); });
-        }
-        // Level 1+: request arbitrary size
-        else if (imageServiceUrl) {
-          imageServiceUrl = imageServiceUrl.replace(/\/$/, '');
-          replaceFeaturedImg(`${imageServiceUrl}/full/!200,200/0/default.jpg`);
-        }
-        else if (fallbackImageUrl) {
-          replaceFeaturedImg(fallbackImageUrl);
-        }
-      })
-      .catch(error => {
-        console.error('Error loading featured object manifest:', objectData.iiif_manifest, error);
-      });
-  }
-  // Local IIIF info.json
-  else {
-    fetch(localInfoUrl)
-      .then(response => response.json())
-      .then(info => {
-        const sizes = info.sizes || [];
-        let thumbnailSize = pickThumbnailSize(sizes);
-
-        if (thumbnailSize) {
-          const baseUrl = info.id || info['@id'];
-          const thumbnailUrl = `${baseUrl}/full/${thumbnailSize.width},${thumbnailSize.height}/0/default.jpg`;
-
-          const img = document.createElement('img');
-          img.src = thumbnailUrl;
-          img.alt = item.closest('.collection-item').querySelector('.collection-title').textContent;
-          img.style.width = '100%';
-          img.style.height = '100%';
-          img.style.objectFit = 'cover';
-          item.innerHTML = '';
-          item.appendChild(img);
-        }
-      })
-      .catch(error => {
-        console.error('Error loading featured object info.json:', localInfoUrl, error);
-      });
-  }
-});
-
-/**
- * Prefetch story manifests on hover (v0.6.2)
- * When user hovers over a story card, prefetch its IIIF manifests
- * to reduce loading time when they enter the story.
- */
-document.querySelectorAll('.story-card').forEach(function(card) {
-  card.addEventListener('mouseenter', function() {
-    // Find all objects used in this story by looking at its data
-    const storyUrl = this.getAttribute('href');
-    if (!storyUrl) return;
-
-    // Get the story's first object from the thumbnail element
-    const thumbnailEl = this.querySelector('.story-iiif-thumbnail[data-object-id]');
-    if (!thumbnailEl) return;
-
-    const objectId = thumbnailEl.getAttribute('data-object-id');
-    if (!objectId) return;
-
-    // Find object data and prefetch its manifest
-    const objectData = window.objectsData.find(obj => obj.object_id === objectId);
-    if (objectData && objectData.iiif_manifest) {
-      // Create prefetch link if not already prefetched
-      const existingPrefetch = document.querySelector(`link[href="${objectData.iiif_manifest}"]`);
-      if (!existingPrefetch) {
-        const prefetchLink = document.createElement('link');
-        prefetchLink.rel = 'prefetch';
-        prefetchLink.href = objectData.iiif_manifest;
-        document.head.appendChild(prefetchLink);
-        console.log(`Prefetching manifest for ${objectId} on hover`);
-      }
-    }
-  }, { once: true }); // Only prefetch once per story card
-});
 </script>
+<script src="{{ '/assets/js/home-page.js' | relative_url }}"></script>

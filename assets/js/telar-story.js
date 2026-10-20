@@ -1,27 +1,52 @@
+/* GENERATED FILE - do not edit. Bundled from assets/js/telar-story/ by esbuild. Rebuild: npm run build:js (see assets/js/README.md). @version v1.8.1 */
 (() => {
   // assets/js/telar-story/state.js
-  var STEP_COOLDOWN = 600;
-  var MAX_SCROLL_DELTA = 200;
-  var MOBILE_NAV_COOLDOWN = 400;
+  var BUTTON_NAV_COOLDOWN = 400;
+  var MOVE = { base: 1.2, perUnit: 1.33, maxSeconds: 3 };
+  var _moveTuning = null;
+  var _moveSearch = null;
+  function _moveTuningNow() {
+    const search = window.location.search;
+    if (_moveTuning && search === _moveSearch) return _moveTuning;
+    _moveSearch = search;
+    _moveTuning = { ...MOVE };
+    const raw = new URLSearchParams(search).get("nav");
+    const [base, perUnit, maxSeconds] = (raw || "").split(",").map(Number);
+    if (base >= 0.1 && base <= 20) _moveTuning.base = base;
+    if (perUnit >= 0 && perUnit <= 20) _moveTuning.perUnit = perUnit;
+    if (maxSeconds >= 0.1 && maxSeconds <= 20) _moveTuning.maxSeconds = maxSeconds;
+    return _moveTuning;
+  }
+  function moveSeconds(travel) {
+    const { base, perUnit, maxSeconds } = _moveTuningNow();
+    return Math.max(base, Math.min(maxSeconds, perUnit * travel));
+  }
   var state = {
     // ── Navigation ───────────────────────────────────────────────────────────
     /** @type {HTMLElement[]} All .story-step elements in DOM order. */
     steps: [],
     /** Index of the current desktop step (-1 = none). */
     currentIndex: -1,
-    /** Accumulated scroll distance (px) toward the next threshold. */
-    scrollAccumulator: 0,
-    /** Object ID currently displayed in the viewer. */
-    currentObject: null,
-    /** Timestamp (ms) of the last step change – used for cooldown. */
-    lastStepChangeTime: 0,
-    // ── Viewer cards ─────────────────────────────────────────────────────────
-    /** The viewer card object currently visible on screen. */
-    currentViewerCard: null,
-    /** @type {ViewerCard[]} Pool of viewer card objects. */
-    viewerCards: [],
-    /** Counter for generating unique viewer instance DOM IDs. */
-    viewerCardCounter: 0,
+    // ── Scroll engine ─────────────────────────────────────────────────────────
+    /** Continuous float position (e.g. 2.3 = step 2, 30% progress). */
+    scrollPosition: 0,
+    /** Fractional progress within the current step (0.0–1.0). */
+    scrollProgress: 0,
+    /** Whether a snap animation is currently in flight. */
+    isSnapping: false,
+    /** Set true during scroll-driven activateCard calls, so the plate does not animate the camera the scroll is placing. */
+    scrollDriven: false,
+    /** Lenis instance reference — used by panels.js to stop/start scroll. */
+    lenis: null,
+    /** Snap plugin instance reference. */
+    snap: null,
+    /**
+     * Pixels one step occupies on the scroll surface: the viewport height the
+     * surface was last laid out for, which trails the window by the resize
+     * debounce. Every conversion between a step and a scroll offset uses it;
+     * 0 when the scroll engine is not running.
+     */
+    scrollStepPx: 0,
     /** Quick lookup: object_id → object data from window.objectsData. */
     objectsIndex: {},
     // ── Panels ───────────────────────────────────────────────────────────────
@@ -33,32 +58,63 @@
     scrollLockActive: false,
     /** Whether the user dismissed the credits badge this session. */
     creditsDismissed: false,
-    // ── Touch (iPad/tablet swipe navigation) ─────────────────────────────────
-    /** Y coordinate where the current touch started. */
-    touchStartY: 0,
-    /** Y coordinate where the current touch ended. */
-    touchEndY: 0,
-    // ── Mobile / embed button navigation ─────────────────────────────────────
-    /** Whether the viewport is below the mobile breakpoint (768 px). */
-    isMobileViewport: false,
-    /** Index of the current step in mobile/embed button mode. */
-    currentMobileStep: 0,
+    // ── Autoplay policy ──────────────────────────────────────────────────────
+    /** Set true on first play overlay tap; enables autoplay for all subsequent media cards. */
+    hasUserInteracted: false,
+    // ── Layout mode & embed ──────────────────────────────────────────────────
+    /** @type {'horizontal' | 'vertical'} Layout mode. Updated by layout-mode.js on every resize/orientationchange. */
+    layoutMode: "horizontal",
+    /** Page-level boolean, set once at boot from window.telarEmbed.enabled. Orthogonal to layoutMode. */
+    isEmbed: false,
+    /** @type {DOMRect | null} Active text card's getBoundingClientRect; null when no active text card (title card, full-object mode). Populated by card-pool.js on activation + layout-mode.js on layoutchange. */
+    cardOverlayRect: null,
+    // ── Button navigation ────────────────────────────────────────────────────
+    /** Index of the current step in button navigation. */
+    currentButtonStep: 0,
+    /** Whether button navigation is showing the intro card (before step 0). */
+    buttonInIntro: false,
     /** References to the prev/next button DOM elements. */
-    mobileNavButtons: null,
-    /** Whether mobile navigation is in its cooldown period. */
-    mobileNavigationCooldown: false,
+    buttonNavButtons: null,
+    /** Whether button navigation is in its cooldown period. */
+    buttonNavCooldown: false,
     // ── Connection speed ─────────────────────────────────────────────────────
     /** @type {number[]} Measured manifest fetch times (ms) for threshold tuning. */
     manifestLoadTimes: [],
-    // ── Thresholds (computed in main.js from window.innerHeight) ─────────────
-    /** Scroll distance (px) required to trigger a step change (50 vh). */
-    scrollThreshold: 0,
-    /** Swipe distance (px) required to trigger a step change (20 vh). */
-    touchThreshold: 0,
+    /**
+     * Map of sceneIndex -> Plate, one per scene, built once and never evicted.
+     * `.container` is the element. What a plate holds — a viewer, a player,
+     * nothing yet — is the plate's own business; the viewer pool inside an image
+     * plate is the only thing here that is capped.
+     */
+    viewerPlates: {},
+    /** Map of stepIndex -> text card element. */
+    textCards: {},
+    /** Map of stepIndex -> title card element. Populated by initCardPool. */
+    titleCards: {},
+    /** Index of the currently active title card step, or null when none is active. */
+    activeTitleCardIndex: null,
+    /** The scene of the current object, and the card's position in it (for peek stack positioning). */
+    currentObjectScene: { objectId: null, scenePosition: 0 },
+    // ── Scene maps (populated at initCardPool time) ───────────────────────────
+    /**
+     * Filtered step data (metadata rows removed), in the same index space as
+     * stepToScene / the card registry. Populated by initCardPool. The per-frame
+     * lerp reads this so its stepIndex (a filtered-space index) lines up with
+     * the step objects it interpolates between.
+     */
+    stepsData: [],
+    /** Map of stepIndex -> sceneIndex. Populated by buildSceneMaps at init. */
+    stepToScene: {},
+    /** Map of sceneIndex -> objectId. */
+    sceneToObject: {},
+    /** Map of sceneIndex -> first stepIndex in that scene. */
+    sceneFirstStep: {},
+    /** Total number of scenes in the story. */
+    totalScenes: 0,
     // ── Viewer preloading config (set from telarConfig in main.js) ───────────
     config: {
-      /** Maximum Tify instances kept in memory. */
-      maxViewerCards: 10,
+      /** Maximum IIIF wrapper instances kept in memory (viewer pool cap). */
+      maxViewerCards: 8,
       /** Steps to preload ahead of the current position. */
       preloadSteps: 6,
       /** Show loading shimmer when story has >= this many unique viewers. */
@@ -67,6 +123,109 @@
       minReadyViewers: 3
     }
   };
+
+  // assets/js/telar-story/layout-mode.js
+  var layoutChangeSubs = /* @__PURE__ */ new Set();
+  var viewportResizeSubs = /* @__PURE__ */ new Set();
+  var _cachedMode = null;
+  var _breakpoints = null;
+  var _modeMql = null;
+  var _resizeTimer = null;
+  var DEBOUNCE_MS = 100;
+  var _initialized = false;
+  function _readBreakpoints() {
+    const cs = getComputedStyle(document.documentElement);
+    const minW = parseFloat(cs.getPropertyValue("--telar-vertical-min-width").trim()) || 1024;
+    const minA = parseFloat(cs.getPropertyValue("--telar-vertical-min-aspect").trim()) || 0.75;
+    return { verticalMinWidth: minW, verticalMinAspect: minA };
+  }
+  function shortWindowClauses(raw) {
+    return raw.split(",").map((pair) => pair.trim().split(/\s+/)).filter((pair) => pair.length === 2 && pair.every((v) => Number.isFinite(parseFloat(v)))).map(([h, w]) => `(max-height: ${h}) and (max-width: ${w})`);
+  }
+  function _evaluateMode() {
+    return _modeMql.matches ? "vertical" : "horizontal";
+  }
+  function _dispatchLayoutChange() {
+    const next = _evaluateMode();
+    const prev = _cachedMode;
+    _cachedMode = next;
+    if (prev !== null && prev !== next) {
+      state.layoutMode = next;
+      const viewport = { w: window.innerWidth, h: window.innerHeight };
+      for (const cb of layoutChangeSubs) {
+        try {
+          cb({ from: prev, to: next, viewport, isEmbed: state.isEmbed });
+        } catch (e) {
+          console.error("[layout-mode] onLayoutChange handler threw:", e);
+        }
+      }
+    }
+  }
+  function _dispatchViewportResize() {
+    const viewport = { w: window.innerWidth, h: window.innerHeight };
+    for (const cb of viewportResizeSubs) {
+      try {
+        cb({ viewport });
+      } catch (e) {
+        console.error("[layout-mode] onViewportResize handler threw:", e);
+      }
+    }
+  }
+  function _onResize() {
+    if (_resizeTimer) clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(_dispatchViewportResize, DEBOUNCE_MS);
+  }
+  function _onOrientationChange() {
+    if (_resizeTimer) clearTimeout(_resizeTimer);
+    _dispatchLayoutChange();
+    _dispatchViewportResize();
+  }
+  function _initOnce() {
+    if (_initialized) return;
+    _initialized = true;
+    _breakpoints = _readBreakpoints();
+    const { verticalMinWidth: minW, verticalMinAspect: minA } = _breakpoints;
+    const maxH = getCardLandscapeMaxHeight();
+    const shortWindows = shortWindowClauses(getComputedStyle(document.documentElement).getPropertyValue("--telar-vertical-short-windows"));
+    _modeMql = window.matchMedia([
+      `(max-width: ${minW}px)`,
+      `(max-aspect-ratio: ${minA})`,
+      `(max-height: ${maxH}px)`,
+      ...shortWindows
+    ].join(", "));
+    _cachedMode = _evaluateMode();
+    _modeMql.addEventListener("change", _dispatchLayoutChange);
+    window.addEventListener("resize", _onResize, { passive: true });
+    window.addEventListener("orientationchange", _onOrientationChange, { passive: true });
+  }
+  function getLayoutMode() {
+    _initOnce();
+    return _cachedMode;
+  }
+  function onLayoutChange(cb) {
+    _initOnce();
+    layoutChangeSubs.add(cb);
+    return () => layoutChangeSubs.delete(cb);
+  }
+  function onViewportResize(cb) {
+    _initOnce();
+    viewportResizeSubs.add(cb);
+    return () => viewportResizeSubs.delete(cb);
+  }
+  function isPhoneHeightSideCard() {
+    return window.matchMedia(`(max-height: ${getCardLandscapeMaxHeight()}px)`).matches;
+  }
+  function getCardLandscapeMaxHeight() {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--telar-card-landscape-max-height");
+    return parseFloat(raw) || 480;
+  }
+
+  // assets/js/objects-filter/escape.js
+  function escapeHtml(text, doc = document) {
+    const div = doc.createElement("div");
+    div.textContent = text == null ? "" : String(text);
+    return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
 
   // assets/js/telar-story/utils.js
   function getBasePath() {
@@ -82,21 +241,12 @@
     const images = tempDiv.querySelectorAll("img");
     images.forEach((img) => {
       const src = img.getAttribute("src");
-      if (src && src.startsWith("/") && !src.startsWith("//")) {
+      const alreadyUnderBase = basePath !== "" && src && src.startsWith(basePath + "/");
+      if (src && src.startsWith("/") && !src.startsWith("//") && !alreadyUnderBase) {
         img.setAttribute("src", basePath + src);
       }
     });
     return tempDiv.innerHTML;
-  }
-  function calculateViewportPosition(viewport, x, y, zoom) {
-    const homeZoom = viewport.getHomeZoom();
-    const imageBounds = viewport.getHomeBounds();
-    const point = {
-      x: imageBounds.x + x * imageBounds.width,
-      y: imageBounds.y + y * imageBounds.height
-    };
-    const actualZoom = homeZoom * zoom;
-    return { point, actualZoom };
   }
 
   // assets/js/telar-story/viewer.js
@@ -122,244 +272,42 @@
     const basePath = getBasePath();
     if (page) {
       const manifestUrl2 = `${window.location.origin}${basePath}/iiif/objects/${objectId}/page-${page}/manifest.json`;
-      console.log("Building local IIIF page manifest URL:", manifestUrl2);
       return manifestUrl2;
     }
     const manifestUrl = `${window.location.origin}${basePath}/iiif/objects/${objectId}/manifest.json`;
-    console.log("Building local IIIF manifest URL:", manifestUrl);
     return manifestUrl;
   }
-  function createViewerCard(objectId, zIndex, x, y, zoom, page) {
-    const container = document.getElementById("viewer-cards-container");
-    const cardElement = document.createElement("div");
-    cardElement.className = "viewer-card card-below";
-    cardElement.style.zIndex = zIndex;
-    cardElement.dataset.object = objectId;
-    const viewerId = `viewer-instance-${state.viewerCardCounter}`;
-    const viewerDiv = document.createElement("div");
-    viewerDiv.className = "viewer-instance";
-    viewerDiv.id = viewerId;
-    cardElement.appendChild(viewerDiv);
-    container.appendChild(cardElement);
-    console.log(`Created viewer card for ${objectId} with z-index ${zIndex}, will snap to x=${x}, y=${y}, zoom=${zoom}${page ? `, page=${page}` : ""}`);
-    const manifestUrl = getManifestUrl(objectId, page);
-    if (!manifestUrl) {
-      console.error("Could not determine manifest URL for:", objectId);
-      return null;
-    }
-    const tifyInstance = new window.Tify({
-      container: "#" + viewerId,
-      manifestUrl,
-      panels: [],
-      urlQueryKey: false
-    });
-    const viewerCard = {
-      objectId,
-      page: page || void 0,
-      element: cardElement,
-      tifyInstance,
-      osdViewer: null,
-      isReady: false,
-      pendingZoom: !isNaN(x) && !isNaN(y) && !isNaN(zoom) ? { x, y, zoom, snap: true } : null,
-      zIndex
-    };
-    tifyInstance.ready.then(() => {
-      viewerCard.osdViewer = tifyInstance.viewer;
-      viewerCard.isReady = true;
-      console.log(`Viewer card for ${objectId} is ready`);
-      if (viewerCard.pendingZoom) {
-        if (viewerCard.pendingZoom.snap) {
-          snapViewerToPosition(viewerCard, viewerCard.pendingZoom.x, viewerCard.pendingZoom.y, viewerCard.pendingZoom.zoom);
-        } else {
-          animateViewerToPosition(viewerCard, viewerCard.pendingZoom.x, viewerCard.pendingZoom.y, viewerCard.pendingZoom.zoom);
-        }
-        viewerCard.pendingZoom = null;
-      }
-    }).catch((err) => {
-      console.error(`Tify failed to initialize for ${objectId}:`, err);
-      viewerCard.isReady = true;
-    });
-    state.viewerCards.push(viewerCard);
-    state.viewerCardCounter++;
-    if (state.viewerCards.length > state.config.maxViewerCards) {
-      const oldest = state.viewerCards.shift();
-      destroyViewerCard(oldest);
-    }
-    return viewerCard;
-  }
-  function getOrCreateViewerCard(objectId, zIndex, x, y, zoom, page) {
-    console.log(`getOrCreateViewerCard called for ${objectId}`);
-    console.log(`Current viewerCards: ${state.viewerCards.map((vc) => vc.objectId).join(", ")}`);
-    const existing = state.viewerCards.find((vc) => vc.objectId === objectId);
-    if (existing) {
-      const existingPage = existing.page;
-      const requestedPage = page || void 0;
-      if (existingPage !== requestedPage) {
-        console.log(`Page changed for ${objectId}: ${existingPage} \u2192 ${requestedPage}, recreating viewer card`);
-        destroyViewerCard(existing);
-        state.viewerCards = state.viewerCards.filter((vc) => vc !== existing);
-        return createViewerCard(objectId, zIndex, x, y, zoom, page);
-      }
-      console.log(`Reusing existing viewer card for ${objectId}`);
-      existing.element.style.zIndex = zIndex;
-      existing.zIndex = zIndex;
-      console.log(`Resetting viewer card state for ${objectId}`);
-      existing.element.classList.remove("card-below");
-      if (!isNaN(x) && !isNaN(y) && !isNaN(zoom)) {
-        if (existing.isReady) {
-          snapViewerToPosition(existing, x, y, zoom);
-        } else {
-          existing.pendingZoom = { x, y, zoom, snap: true };
-        }
-      }
-      return existing;
-    }
-    console.log(`Creating new viewer card for ${objectId}`);
-    return createViewerCard(objectId, zIndex, x, y, zoom, page);
-  }
-  function destroyViewerCard(viewerCard) {
-    console.log(`Destroying viewer card for ${viewerCard.objectId}`);
-    if (viewerCard.element && viewerCard.element.parentNode) {
-      viewerCard.element.parentNode.removeChild(viewerCard.element);
-    }
-    if (viewerCard.tifyInstance && typeof viewerCard.tifyInstance.destroy === "function") {
-      viewerCard.tifyInstance.destroy();
-    }
-    viewerCard.tifyInstance = null;
-    viewerCard.osdViewer = null;
-  }
-  function initializeFirstViewer() {
-    const firstObjectId = window.storyData?.firstObject;
-    if (!firstObjectId) {
-      console.error("No first object specified in story data");
-      return;
-    }
-    console.log("Initializing first viewer for object:", firstObjectId);
-    const steps = window.storyData?.steps || [];
-    const firstRealStep = steps.find((step) => step.object === firstObjectId);
-    const x = firstRealStep ? parseFloat(firstRealStep.x) : void 0;
-    const y = firstRealStep ? parseFloat(firstRealStep.y) : void 0;
-    const zoom = firstRealStep ? parseFloat(firstRealStep.zoom) : void 0;
-    const page = firstRealStep?.page ? parseInt(firstRealStep.page, 10) : void 0;
-    const viewerCard = createViewerCard(firstObjectId, 1, x, y, zoom, page);
-    if (viewerCard) {
-      state.currentViewerCard = viewerCard;
-      viewerCard.element.classList.remove("card-below");
-      viewerCard.element.classList.add("card-active");
-      updateObjectCredits(firstObjectId);
-    }
-  }
-  function animateViewerToPosition(viewerCard, x, y, zoom) {
-    if (!viewerCard || !viewerCard.osdViewer) {
-      console.warn("Viewer card or OpenSeadragon viewer not ready for animation");
-      return;
-    }
-    console.log(`Animating viewer to position: x=${x}, y=${y}, zoom=${zoom} over 4 seconds`);
-    const osdViewer = viewerCard.osdViewer;
-    const viewport = osdViewer.viewport;
-    const { point, actualZoom } = calculateViewportPosition(viewport, x, y, zoom);
-    console.log(`OSD coordinates - point: ${point.x}, ${point.y}, zoom: ${actualZoom}, homeZoom: ${viewport.getHomeZoom()}`);
-    osdViewer.gestureSettingsMouse.clickToZoom = false;
-    osdViewer.gestureSettingsTouch.clickToZoom = false;
-    const originalAnimationTime = osdViewer.animationTime;
-    const originalSpringStiffness = osdViewer.springStiffness;
-    osdViewer.animationTime = 4;
-    osdViewer.springStiffness = 0.8;
-    console.log(`Set animation time to ${osdViewer.animationTime}s, spring stiffness to ${osdViewer.springStiffness}`);
-    viewport.panTo(point, false);
-    viewport.zoomTo(actualZoom, point, false);
-    setTimeout(() => {
-      osdViewer.animationTime = originalAnimationTime;
-      osdViewer.springStiffness = originalSpringStiffness;
-    }, 4100);
-  }
-  function snapViewerToPosition(viewerCard, x, y, zoom) {
-    if (!viewerCard || !viewerCard.osdViewer) {
-      console.warn("Viewer card or OpenSeadragon viewer not ready for snap");
-      return;
-    }
-    const osdViewer = viewerCard.osdViewer;
-    const viewport = osdViewer.viewport;
-    const { point, actualZoom } = calculateViewportPosition(viewport, x, y, zoom);
-    console.log(`Snapping to position immediately: x=${x}, y=${y}, zoom=${zoom}`);
-    viewport.panTo(point, true);
-    viewport.zoomTo(actualZoom, point, true);
-  }
-  function activateViewerCard(newViewerCard, objectId, options = {}) {
-    const { onReady } = options;
-    if (!newViewerCard.isReady) {
-      showViewerSkeletonState();
-    }
-    const startTime = Date.now();
-    const MAX_WAIT_TIME = 5e3;
-    const checkReady = () => {
-      const elapsed = Date.now() - startTime;
-      const ready = newViewerCard.isReady;
-      const timedOut = elapsed >= MAX_WAIT_TIME;
-      if (ready || timedOut) {
-        if (timedOut && !ready) {
-          console.warn(`Viewer for ${objectId} failed to load after 5 seconds, transitioning anyway`);
-        } else {
-          console.log(`Viewer ready for ${objectId}`);
-        }
-        hideViewerSkeletonState();
-        if (onReady) {
-          onReady(newViewerCard);
-        }
-        if (state.currentViewerCard && state.currentViewerCard !== newViewerCard) {
-          state.currentViewerCard.element.classList.remove("card-active");
-          state.currentViewerCard.element.classList.add("card-below");
-        }
-        newViewerCard.element.classList.remove("card-below");
-        newViewerCard.element.classList.add("card-active");
-        state.currentViewerCard = newViewerCard;
-        updateObjectCredits(objectId);
-      } else {
-        console.log(`Viewer not ready yet, waiting... (${elapsed}ms elapsed)`);
-        setTimeout(checkReady, 100);
-      }
-    };
-    checkReady();
-  }
-  function switchToObject(objectId, stepNumber, x, y, zoom, stepElement, direction = "forward", page) {
-    console.log(`Switching to object: ${objectId} at step ${stepNumber} with position x=${x}, y=${y}, zoom=${zoom} (${direction})${page ? `, page=${page}` : ""}`);
-    const newViewerCard = getOrCreateViewerCard(objectId, stepNumber, x, y, zoom, page);
-    activateViewerCard(newViewerCard, objectId, {
-      onReady: (card) => {
-        if (direction === "forward") {
-          if (stepElement) {
-            stepElement.offsetHeight;
-            requestAnimationFrame(() => {
-              stepElement.classList.add("is-active");
-            });
-          }
-          card.element.style.zIndex = card.zIndex;
-        }
-      }
-    });
-  }
-  function switchToObjectMobile(objectId, stepNumber, x, y, zoom, page) {
-    console.log(`Mobile: Switching to object ${objectId} at step ${stepNumber}${page ? `, page=${page}` : ""}`);
-    const newViewerCard = getOrCreateViewerCard(objectId, stepNumber, x, y, zoom, page);
-    activateViewerCard(newViewerCard, objectId);
-  }
+  var _PREFETCH_SKIP_HOSTS = ["youtube.com", "youtu.be", "vimeo.com", "drive.google.com"];
   async function prefetchStoryManifests() {
     const objectIds = [...new Set(
       Array.from(document.querySelectorAll("[data-object]")).map((el) => el.dataset.object).filter(Boolean)
     )];
     if (objectIds.length === 0) return;
-    await Promise.all(objectIds.map(async (id) => {
-      try {
-        const objectData = state.objectsIndex[id];
-        if (objectData?.iiif_manifest) {
+    const manifestUrls = [...new Set(
+      objectIds.map((id) => state.objectsIndex[id]).map((o) => (o && (o.source_url || o.iiif_manifest) || "").trim()).filter((url) => url && !_PREFETCH_SKIP_HOSTS.some((h) => url.includes(h)))
+    )];
+    if (manifestUrls.length === 0) {
+      adjustThresholdsForConnection();
+      return;
+    }
+    const CONCURRENCY = 3;
+    const queue = [...manifestUrls];
+    const worker = async () => {
+      while (queue.length) {
+        const url = queue.shift();
+        try {
           const start = performance.now();
-          await fetch(objectData.iiif_manifest);
-          const elapsed = performance.now() - start;
-          state.manifestLoadTimes.push(elapsed);
+          const resp = await fetch(url, { cache: "force-cache" });
+          await resp.text().catch(() => {
+          });
+          state.manifestLoadTimes.push(performance.now() - start);
+        } catch (e) {
         }
-      } catch (e) {
       }
-    }));
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker)
+    );
     adjustThresholdsForConnection();
   }
   function adjustThresholdsForConnection() {
@@ -368,49 +316,27 @@
     if (avgTime > 1e3) {
       state.config.loadingThreshold = 1;
       state.config.minReadyViewers = Math.min(6, state.config.preloadSteps);
-      console.log(`Slow connection detected (${Math.round(avgTime)}ms avg), adjusting thresholds`);
     } else if (avgTime > 500) {
       state.config.loadingThreshold = Math.max(3, state.config.loadingThreshold - 2);
       state.config.minReadyViewers = Math.min(state.config.minReadyViewers + 1, state.config.preloadSteps);
-      console.log(`Moderate connection detected (${Math.round(avgTime)}ms avg), adjusting thresholds`);
     }
   }
   function initializeLoadingShimmer() {
     const uniqueViewers = new Set(
       state.steps.map((step) => step.dataset.object).filter(Boolean)
     ).size;
-    console.log(`Story has ${uniqueViewers} unique viewers (threshold: ${state.config.loadingThreshold})`);
     if (uniqueViewers >= state.config.loadingThreshold) {
       showViewerSkeletonState();
-      console.log(`Showing initial load shimmer (${uniqueViewers} >= ${state.config.loadingThreshold})`);
       const checkReadyViewers = () => {
-        const readyCount = state.viewerCards.filter((v) => v.isReady).length;
+        const readyCount = Object.values(state.viewerPlates).filter((plate) => plate.isReady).length;
         const targetReady = Math.min(state.config.minReadyViewers, uniqueViewers);
         if (readyCount >= targetReady) {
           hideViewerSkeletonState();
-          console.log(`Hiding shimmer: ${readyCount} viewers ready (target: ${targetReady})`);
         } else {
           setTimeout(checkReadyViewers, 200);
         }
       };
       setTimeout(checkReadyViewers, 500);
-    }
-  }
-  function preloadNearbyViewers(currentIndex, ahead, behind) {
-    for (let offset = -behind; offset <= ahead; offset++) {
-      if (offset === 0) continue;
-      const idx = currentIndex + offset;
-      if (idx < 0 || idx >= state.steps.length) continue;
-      const step = state.steps[idx];
-      const objectId = step.dataset.object;
-      if (!objectId) continue;
-      if (state.viewerCards.find((vc) => vc.objectId === objectId)) continue;
-      const x = parseFloat(step.dataset.x);
-      const y = parseFloat(step.dataset.y);
-      const zoom = parseFloat(step.dataset.zoom);
-      const page = step.dataset.page ? parseInt(step.dataset.page, 10) : void 0;
-      console.log(`Preloading viewer for step ${idx}: ${objectId}`);
-      getOrCreateViewerCard(objectId, idx, x, y, zoom, page);
     }
   }
   function showViewerSkeletonState() {
@@ -453,14 +379,5111 @@
     }
   }
 
+  // assets/js/telar-story/card-type.js
+  var YOUTUBE_RE = /(?:youtube\.com\/(?:watch\?.*v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/;
+  var VIMEO_RE = /vimeo\.com\/(?:video\/)?(\d+)/;
+  var GDRIVE_RE = /drive\.google\.com\/(?:file\/d\/|open\?id=)([A-Za-z0-9_-]+)/;
+  var AUDIO_FILE_RE = /\.(mp3|ogg|m4a)$/i;
+  function detectCardType(stepData) {
+    if (stepData.cardType && stepData.cardType !== "") return stepData.cardType;
+    if (!stepData.objectId || stepData.objectId === "") return "text-only";
+    const sourceUrl = stepData.source_url || "";
+    if (YOUTUBE_RE.test(sourceUrl)) return "youtube";
+    if (VIMEO_RE.test(sourceUrl)) return "vimeo";
+    if (GDRIVE_RE.test(sourceUrl)) return "google-drive";
+    if (AUDIO_FILE_RE.test(stepData.file_path || "")) return "audio";
+    return "iiif";
+  }
+  function extractVideoId(cardType, sourceUrl) {
+    const regexMap = { youtube: YOUTUBE_RE, vimeo: VIMEO_RE, "google-drive": GDRIVE_RE };
+    const match = (sourceUrl || "").match(regexMap[cardType]);
+    return match ? match[1] : null;
+  }
+
+  // assets/js/telar-story/authoring-frame.js
+  var AUTHORING_ASPECT = 1.053;
+  function authoringHomeZoom(imageAspect) {
+    return Math.min(1, imageAspect / AUTHORING_ASPECT);
+  }
+
+  // assets/js/telar-story/plates/framing.js
+  var FULL_OBJECT_FRAMING = { x: 0.5, y: 0.5, zoom: 1 };
+  function stepFraming(step) {
+    const num = (value, fallback) => {
+      const n = parseFloat(value);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    return {
+      x: num(step.x, FULL_OBJECT_FRAMING.x),
+      y: num(step.y, FULL_OBJECT_FRAMING.y),
+      zoom: num(step.zoom, FULL_OBJECT_FRAMING.zoom),
+      page: step.page ? parseInt(step.page, 10) : void 0
+    };
+  }
+
+  // assets/js/telar-story/video-layout.js
+  var _cs = getComputedStyle(document.documentElement);
+  var videoPadFactor = parseFloat(_cs.getPropertyValue("--telar-video-pad-factor").trim()) || 0.025;
+  var videoStackMaxH = parseFloat(_cs.getPropertyValue("--telar-video-stack-max-h").trim()) || 0.58;
+  var cardSideLeft = readFraction("--telar-card-side-left", 0.03);
+  var mediaBelowGain = _readNumber("--telar-media-below-gain", 0.15);
+  var COMPARISON_ASPECT = 16 / 9;
+  function _readNumber(name, fallback) {
+    const value = parseFloat(_cs.getPropertyValue(name).trim());
+    return Number.isFinite(value) ? value : fallback;
+  }
+  function readFraction(name, fallback) {
+    const raw = _cs.getPropertyValue(name).trim();
+    const value = parseFloat(raw);
+    if (!Number.isFinite(value)) return fallback;
+    return raw.endsWith("%") ? value / 100 : value;
+  }
+  function sideCardWidthPx(W) {
+    const published = parseFloat(document.documentElement.style.getPropertyValue("--telar-card-side-width"));
+    if (Number.isFinite(published)) return published;
+    return W * readFraction("--telar-card-side-width", 0.37);
+  }
+  function sideCardRight(W) {
+    return Math.round(W * cardSideLeft + sideCardWidthPx(W));
+  }
+  function mediaPadding(W, H) {
+    return Math.max(8, Math.round(Math.min(W, H) * videoPadFactor));
+  }
+  function unroundedMediaPadding(W, H) {
+    return Math.max(8, Math.min(W, H) * videoPadFactor);
+  }
+  function computeBelowCardTop(W, H, cardH) {
+    return Math.round(H - mediaPadding(W, H) - cardH);
+  }
+  function prefersBelow(besideArea, belowArea) {
+    return belowArea >= besideArea * (1 + mediaBelowGain);
+  }
+  function chooseVideoArrangement(W, H, aspectRatio, cardH, topBand) {
+    const beside = _computeSideBySideLayout(W, H, aspectRatio, topBand).video;
+    const below = _computeBelowLayout(W, H, aspectRatio, {
+      cardTop: computeBelowCardTop(W, H, cardH),
+      topBand
+    }).video;
+    return prefersBelow(beside.width * beside.height, below.width * below.height) ? "below" : "beside";
+  }
+  function computeVideoLayout(W, H, aspectRatio, below = null, topBand = 0) {
+    if (state.layoutMode === "vertical") {
+      return _computeStackedLayout(W, H, aspectRatio);
+    }
+    if (below) return _computeBelowLayout(W, H, aspectRatio, below);
+    return _computeSideBySideLayout(W, H, aspectRatio, topBand);
+  }
+  function _belowRegion(W, pad, below) {
+    return {
+      left: pad,
+      top: below.topBand,
+      width: W - pad * 2,
+      height: Math.max(0, below.cardTop - pad - below.topBand)
+    };
+  }
+  function _computeBelowLayout(W, H, aspectRatio, below) {
+    const pad = mediaPadding(W, H);
+    const region = _belowRegion(W, pad, below);
+    let vidW = region.width;
+    let vidH = vidW / aspectRatio;
+    if (vidH > region.height) {
+      vidH = region.height;
+      vidW = vidH * aspectRatio;
+    }
+    vidW = Math.round(vidW);
+    vidH = Math.round(vidH);
+    const cardW = Math.round(sideCardWidthPx(W));
+    return {
+      mode: "below",
+      video: {
+        left: Math.round(region.left + (region.width - vidW) / 2),
+        top: Math.round(region.top + (region.height - vidH) / 2),
+        width: vidW,
+        height: vidH
+      },
+      card: {
+        left: Math.round(W * cardSideLeft),
+        top: below.cardTop,
+        width: cardW,
+        height: Math.max(0, H - pad - below.cardTop)
+      },
+      padding: cardW > 300 ? 24 : cardW > 200 ? 16 : 10
+    };
+  }
+  function _besideRegion(W, H, pad, topBand) {
+    const left = sideCardRight(W) + pad;
+    const top = Math.max(pad, Math.round(topBand) || 0);
+    return {
+      left,
+      top,
+      width: W - left - pad,
+      height: Math.max(0, Math.round(H - pad - top))
+    };
+  }
+  function _computeSideBySideLayout(W, H, aspectRatio, topBand) {
+    const pad = mediaPadding(W, H);
+    const region = _besideRegion(W, H, pad, topBand);
+    let sideVidW = region.width;
+    let sideVidH = sideVidW / aspectRatio;
+    if (sideVidH > region.height) {
+      sideVidH = region.height;
+      sideVidW = sideVidH * aspectRatio;
+    }
+    return _buildSideBySideResult(W, H, pad, region, sideVidW, sideVidH);
+  }
+  function _buildSideBySideResult(W, H, pad, region, sideVidW, sideVidH) {
+    const vidW = Math.round(sideVidW);
+    const vidH = Math.round(sideVidH);
+    const vidLeft = region.left;
+    const vidTop = Math.max(region.top, Math.round((H - vidH) / 2));
+    const cardW = Math.round(sideCardWidthPx(W));
+    const cardH = Math.round(H - pad * 2);
+    const cardLeft = Math.round(W * cardSideLeft);
+    const cardTop = pad;
+    const cardPad = cardW > 300 ? 24 : cardW > 200 ? 16 : 10;
+    return {
+      mode: "side-by-side",
+      video: { left: vidLeft, top: vidTop, width: vidW, height: vidH },
+      card: { left: cardLeft, top: cardTop, width: cardW, height: cardH },
+      padding: cardPad
+    };
+  }
+  function _buildStackedResult(W, H, pad, stackVidW, stackVidH) {
+    const vidW = Math.round(stackVidW);
+    const vidH = Math.round(stackVidH);
+    const vidLeft = Math.round((W - vidW) / 2);
+    const vidTop = pad;
+    const cardTop = vidTop + vidH + pad;
+    const cardH = Math.max(60, H - cardTop - pad);
+    const cardW = Math.round(W - pad * 2);
+    const cardLeft = pad;
+    const cardPad = cardH > 200 ? 22 : cardH > 120 ? 14 : 8;
+    return {
+      mode: "stacked",
+      video: { left: vidLeft, top: vidTop, width: vidW, height: vidH },
+      card: { left: cardLeft, top: cardTop, width: cardW, height: cardH },
+      padding: cardPad
+    };
+  }
+  function computeVideoLetterboxRegion(W, H, below = null, topBand = 0) {
+    const pad = mediaPadding(W, H);
+    if (state.layoutMode === "vertical") {
+      return {
+        left: pad,
+        top: pad,
+        width: Math.round(W - pad * 2),
+        height: Math.round(H * videoStackMaxH)
+      };
+    }
+    if (below) return _belowRegion(W, pad, below);
+    return _besideRegion(W, H, pad, topBand);
+  }
+  function _computeStackedLayout(W, H, aspectRatio) {
+    const pad = mediaPadding(W, H);
+    const stackVideoMaxW = W - pad * 2;
+    const stackVideoMaxH = H * videoStackMaxH;
+    let stackVidW = stackVideoMaxW;
+    let stackVidH = stackVidW / aspectRatio;
+    if (stackVidH > stackVideoMaxH) {
+      stackVidH = stackVideoMaxH;
+      stackVidW = stackVidH * aspectRatio;
+    }
+    return _buildStackedResult(W, H, pad, stackVidW, stackVidH);
+  }
+  function buildYouTubeEmbedConfig(videoId, clipStart, clipEnd, loop) {
+    return {
+      videoId,
+      playerVars: {
+        start: clipStart || 0,
+        autoplay: 0,
+        mute: 0,
+        // loop/playlist omitted — segment looping handled by rAF polling
+        // (YouTube loop playerVar loops the whole video, not the clip)
+        controls: 1,
+        rel: 0,
+        modestbranding: 1
+      }
+    };
+  }
+  function buildGDriveEmbedUrl(fileId) {
+    return `https://drive.google.com/file/d/${fileId}/preview`;
+  }
+
+  // assets/js/telar-story/card-height.js
+  var _seconds = moveSeconds(0);
+  function setMoveSeconds(seconds, cardStack = document.querySelector(".card-stack")) {
+    _seconds = seconds;
+    cardStack?.style.setProperty("--card-motion-duration", `${seconds}s`);
+  }
+  function moveSecondsNow() {
+    return _seconds;
+  }
+
+  // assets/js/telar-story/camera-move.js
+  function holdClickToZoom(plate) {
+    const { gestureSettingsMouse: mouse, gestureSettingsTouch: touch } = plate.osdViewer;
+    if (!plate.heldClickToZoom) {
+      plate.heldClickToZoom = { mouse: mouse.clickToZoom, touch: touch.clickToZoom };
+    }
+    mouse.clickToZoom = false;
+    touch.clickToZoom = false;
+  }
+  function releaseClickToZoom(plate) {
+    const held = plate.heldClickToZoom;
+    if (!held) return;
+    plate.heldClickToZoom = null;
+    if (!plate.osdViewer) return;
+    plate.osdViewer.gestureSettingsMouse.clickToZoom = held.mouse;
+    plate.osdViewer.gestureSettingsTouch.clickToZoom = held.touch;
+  }
+  var UNSEEN_PX = 0.5;
+  function placementsCoincide(a, b, container) {
+    const topLeft = (p) => ({
+      x: p.anchorPx.x - p.anchorImg.x * p.s,
+      y: p.anchorPx.y - p.anchorImg.y * p.s
+    });
+    const ca = topLeft(a);
+    const cb = topLeft(b);
+    const edge = Math.abs(a.s / b.s - 1);
+    return Math.abs(ca.x - cb.x) < UNSEEN_PX && Math.abs(ca.y - cb.y) < UNSEEN_PX && edge * container.width < UNSEEN_PX && edge * container.height < UNSEEN_PX;
+  }
+  var easeOut = (t) => 1 - (1 - t) ** 3;
+  function shownPlacement(plate, rect) {
+    const vp = plate.osdViewer.viewport;
+    const shown = vp.viewportToImageRectangle(vp.getBounds(true));
+    return {
+      s: rect.width / shown.width,
+      anchorImg: { x: shown.x, y: shown.y },
+      anchorPx: { x: 0, y: 0 }
+    };
+  }
+
+  // assets/js/telar-story/iiif-card.js
+  function _isSane(imageW, imageH, viewportW, viewportH, x, y, zoom) {
+    const fin = (v) => typeof v === "number" && Number.isFinite(v);
+    if (!fin(imageW) || imageW <= 0) return false;
+    if (!fin(imageH) || imageH <= 0) return false;
+    if (!fin(viewportW) || viewportW <= 0) return false;
+    if (!fin(viewportH) || viewportH <= 0) return false;
+    if (!fin(x) || x < 0 || x > 1) return false;
+    if (!fin(y) || y < 0 || y > 1) return false;
+    if (!fin(zoom) || zoom <= 0) return false;
+    return true;
+  }
+  var _CSS_HORIZ_CARD_LEFT = 3 / 100;
+  var _CSS_VERT_CARD_H_VH = 40 / 100;
+  var _CSS_VERT_CARD_TOP_FRAC = 1 - _CSS_VERT_CARD_H_VH;
+  function _defaultCardBox(placement, viewportW, viewportH) {
+    if (placement === "horizontal") {
+      return {
+        x: viewportW * _CSS_HORIZ_CARD_LEFT,
+        y: 0,
+        w: sideCardWidthPx(viewportW),
+        h: viewportH
+      };
+    }
+    return {
+      x: 0,
+      y: viewportH * _CSS_VERT_CARD_TOP_FRAC,
+      w: viewportW,
+      h: viewportH * _CSS_VERT_CARD_H_VH
+    };
+  }
+  function _deriveCardPlacement(cardBox, viewportW, viewportH) {
+    if (!cardBox) {
+      if (isPhoneHeightSideCard()) return "horizontal";
+      return state.layoutMode === "vertical" ? "vertical" : "horizontal";
+    }
+    if (cardBox.x + cardBox.w < viewportW * 0.6) return "horizontal";
+    return "vertical";
+  }
+  var FOCAL_DIAMETER_FRAC = 0.9;
+  function computeFocalTarget(x, y, zoom, imageW, imageH, cardBox, placementMode) {
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+    if (!_isSane(imageW, imageH, viewportW, viewportH, x, y, zoom)) {
+      return null;
+    }
+    const box = cardBox !== null && cardBox !== void 0 ? cardBox : _defaultCardBox(placementMode, viewportW, viewportH);
+    let region;
+    if (placementMode === "horizontal") {
+      const visX = box.x + box.w;
+      region = { x: visX, y: 0, w: viewportW - visX, h: viewportH };
+    } else {
+      region = { x: 0, y: 0, w: viewportW, h: box.y };
+    }
+    const imageAspect = imageW / imageH;
+    const homeZoomAuth = authoringHomeZoom(imageAspect);
+    const frameWidthImg = imageW / (homeZoomAuth * zoom);
+    const diameterImg = FOCAL_DIAMETER_FRAC * frameWidthImg;
+    const focalImg = { x: x * imageW, y: y * imageH };
+    return { focalImg, diameterImg, region, imageW, imageH };
+  }
+  var OVERVIEW_MIN_FRACTION = 0.1;
+  function overviewPullFraction(zoom) {
+    if (!Number.isFinite(zoom)) return 1;
+    return Math.min(1, Math.max(OVERVIEW_MIN_FRACTION, zoom));
+  }
+  function _clampFocalPx(region, edges, ideal, radius) {
+    const MEET_PX = 1e-3;
+    const into = (lo, hi, want) => lo <= hi + MEET_PX ? Math.max(lo, Math.min(hi, want)) : null;
+    const axis = (start, extent, near, far, want) => {
+      const coverLo = start + extent - far;
+      const coverHi = start + near;
+      const both = into(
+        Math.max(coverLo, start + radius),
+        Math.min(coverHi, start + extent - radius),
+        want
+      );
+      if (both !== null) return both;
+      const covered = into(coverLo, coverHi, want);
+      if (covered !== null) return covered;
+      return Math.max(coverHi, Math.min(coverLo, want));
+    };
+    return {
+      x: axis(region.x, region.w, edges.eLeft, edges.eRight, ideal.x),
+      y: axis(region.y, region.h, edges.eTop, edges.eBottom, ideal.y)
+    };
+  }
+  function framePlacement(target, zoom, container) {
+    const { focalImg, diameterImg, region, imageW: imgW, imageH: imgH } = target;
+    const rect = container;
+    const hasRegion = region.w > 0 && region.h > 0;
+    const isOverview = zoom <= 1;
+    const s_tgt = Math.min(region.w, region.h) / diameterImg;
+    const s_fit = hasRegion ? Math.min(region.w / imgW, region.h / imgH) : Math.min(rect.width / imgW, rect.height / imgH);
+    const pull = overviewPullFraction(zoom);
+    const s = isOverview ? s_fit * pull : zoom < 2 ? s_fit + (zoom - 1) * (Math.max(s_tgt * (2 / zoom), s_fit) - s_fit) : Math.max(s_tgt, s_fit);
+    const anchorImg = _placedPoint(focalImg, imgW, imgH, zoom);
+    const CB = { x: region.x + region.w / 2, y: region.y + region.h / 2 };
+    const edges = {
+      eLeft: anchorImg.x * s,
+      eRight: (imgW - anchorImg.x) * s,
+      eTop: anchorImg.y * s,
+      eBottom: (imgH - anchorImg.y) * s
+    };
+    const radiusPx = Math.min(
+      diameterImg * s / 2,
+      edges.eLeft,
+      edges.eRight,
+      edges.eTop,
+      edges.eBottom
+    );
+    const F = _clampFocalPx(region, edges, CB, radiusPx);
+    return { s, anchorImg, anchorPx: F };
+  }
+  function _placedPoint(focalImg, imgW, imgH, zoom) {
+    return zoom <= 1 ? { x: imgW / 2, y: imgH / 2 } : focalImg;
+  }
+  function _viewerImageRect({ s, anchorImg, anchorPx }, container) {
+    return {
+      x: anchorImg.x - anchorPx.x / s,
+      y: anchorImg.y - anchorPx.y / s,
+      w: container.width / s,
+      h: container.height / s
+    };
+  }
+  function visibleImageRegion(target, zoom, container) {
+    const r = _viewerImageRect(framePlacement(target, zoom, container), container);
+    const shown = {
+      left: Math.max(0, r.x),
+      top: Math.max(0, r.y),
+      right: Math.min(target.imageW, r.x + r.w),
+      bottom: Math.min(target.imageH, r.y + r.h)
+    };
+    return shown.right > shown.left && shown.bottom > shown.top ? shown : null;
+  }
+  function blendPlacements(from, to, t) {
+    const corner = (p) => ({
+      x: p.anchorPx.x - p.anchorImg.x * p.s,
+      y: p.anchorPx.y - p.anchorImg.y * p.s
+    });
+    const a = corner(from);
+    const b = corner(to);
+    const s = t >= 1 ? to.s : from.s * (to.s / from.s) ** t;
+    const along = from.s === to.s ? t : (s - from.s) / (to.s - from.s);
+    const mix = (u, v) => u + (v - u) * along;
+    return {
+      s,
+      anchorImg: { x: 0, y: 0 },
+      anchorPx: { x: mix(a.x, b.x), y: mix(a.y, b.y) }
+    };
+  }
+  function _livePlacement(plate, x, y, zoom) {
+    const source = plate.osdViewer.world.getItemAt(0)?.source;
+    if (!source?.width || !source?.height) return null;
+    if (state.activeTitleCardIndex != null) return null;
+    const r = state.cardOverlayRect;
+    const cardBox = r ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
+    const placementMode = _deriveCardPlacement(cardBox, window.innerWidth, window.innerHeight);
+    const target = computeFocalTarget(x, y, zoom, source.width, source.height, cardBox, placementMode);
+    if (!target) return null;
+    const rect = plate.osdWrapper.containerEl.getBoundingClientRect();
+    return { rect, region: target.region, placement: framePlacement(target, zoom, rect) };
+  }
+  function _applyPlacement(plate, rect, placement, immediate) {
+    const vp = plate.osdViewer.viewport;
+    const OSD = window.OpenSeadragon;
+    const r = _viewerImageRect(placement, rect);
+    const targetVp = vp.imageToViewportRectangle(new OSD.Rect(r.x, r.y, r.w, r.h));
+    vp.fitBounds(targetVp, immediate);
+  }
+  function _applyFocalTarget(plate, x, y, zoom, immediate) {
+    const live = _livePlacement(plate, x, y, zoom);
+    if (!live) return false;
+    _applyPlacement(plate, live.rect, live.placement, immediate);
+    return true;
+  }
+  function _applyBetween(plate, a, b, t) {
+    const from = _livePlacement(plate, a.x, a.y, a.zoom);
+    const to = _livePlacement(plate, b.x, b.y, b.zoom);
+    if (!from || !to) return false;
+    _applyPlacement(plate, to.rect, blendPlacements(from.placement, to.placement, t), true);
+    return true;
+  }
+  function snapIiifToPosition(plate, x, y, zoom) {
+    if (!plate || !plate.osdViewer) {
+      console.warn("snapIiifToPosition: viewer not ready for snap");
+      return false;
+    }
+    stopCameraMove(plate);
+    return _applyFocalTarget(plate, x, y, zoom, true);
+  }
+  function stopCameraMove(plate) {
+    plate.cameraMove = (plate.cameraMove || 0) + 1;
+    releaseClickToZoom(plate);
+  }
+  function animateIiifToPosition(plate, x, y, zoom) {
+    if (!plate || !plate.osdViewer) {
+      console.warn("animateIiifToPosition: viewer not ready for animation");
+      return;
+    }
+    stopCameraMove(plate);
+    const token = plate.cameraMove;
+    holdClickToZoom(plate);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      _applyFocalTarget(plate, x, y, zoom, true);
+      releaseClickToZoom(plate);
+      return;
+    }
+    const ms = moveSecondsNow() * 1e3;
+    let from = null;
+    let start = null;
+    const frame = (now) => {
+      if (plate.cameraMove !== token || !plate.osdViewer) return;
+      const live = _livePlacement(plate, x, y, zoom);
+      if (!live) return releaseClickToZoom(plate);
+      const first = start === null;
+      if (first) [start, from] = [now, shownPlacement(plate, live.rect)];
+      const rests = first && placementsCoincide(from, live.placement, live.rect);
+      const t = rests ? 1 : Math.min(1, (now - start) / ms);
+      const placement = t < 1 ? blendPlacements(from, live.placement, easeOut(t)) : live.placement;
+      _applyPlacement(plate, live.rect, placement, true);
+      if (t < 1) requestAnimationFrame(frame);
+      else releaseClickToZoom(plate);
+    };
+    requestAnimationFrame(frame);
+  }
+  function _objectOf(step) {
+    return step.object || "";
+  }
+  function _authoredFraming(step) {
+    const x = parseFloat(step.x), y = parseFloat(step.y), zoom = parseFloat(step.zoom);
+    if (isNaN(x) || isNaN(y) || isNaN(zoom)) return null;
+    return { x, y, zoom };
+  }
+  function _restsAt(resting, stepIndex, x, y, zoom) {
+    return Boolean(resting) && resting.step === stepIndex && resting.x === x && resting.y === y && resting.zoom === zoom;
+  }
+  function lerpIiifPosition(stepIndex, progress, stepsData) {
+    const stepA = stepsData[stepIndex];
+    if (!stepA) return;
+    const atRest = progress < 1e-3;
+    const stepB = stepsData[stepIndex + 1];
+    const travels = Boolean(stepB) && _objectOf(stepA) === _objectOf(stepB);
+    if (!travels && !atRest) return;
+    const a = _authoredFraming(stepA);
+    const b = travels ? _authoredFraming(stepB) : a;
+    if (!a || !b) return;
+    const plate = state.viewerPlates[state.stepToScene[stepIndex]];
+    if (!plate || !plate.isReady) return;
+    if (atRest) {
+      if (_restsAt(plate.restingAt, stepIndex, a.x, a.y, a.zoom)) return;
+      if (snapIiifToPosition(plate, a.x, a.y, a.zoom)) {
+        plate.restingAt = { step: stepIndex, ...a };
+      }
+      return;
+    }
+    plate.restingAt = null;
+    _travel(plate, a, b, progress);
+  }
+  function _travel(plate, a, b, t) {
+    _applyBetween(plate, a, b, t);
+  }
+  function reSnapActiveViewer() {
+    const plate = Object.values(state.viewerPlates).find(
+      (p) => p.container?.classList.contains("is-active")
+    );
+    if (!plate || !plate.isReady) return;
+    const activeTextCard = document.querySelector(".text-card.is-active");
+    if (!activeTextCard) return;
+    const stepIndex = parseInt(activeTextCard.dataset.stepIndex, 10);
+    if (isNaN(stepIndex)) return;
+    const steps = (window.storyData?.steps || []).filter((s) => !s._metadata);
+    const step = steps[stepIndex];
+    if (!step) return;
+    const { x, y, zoom } = stepFraming(step);
+    snapIiifToPosition(plate, x, y, zoom);
+  }
+  onLayoutChange(() => {
+    requestAnimationFrame(() => {
+      const activeCard = document.querySelector(".text-card.is-active");
+      state.cardOverlayRect = activeCard ? activeCard.getBoundingClientRect() : null;
+      reSnapActiveViewer();
+    });
+  });
+
+  // assets/js/telar-story/text-card.js
+  function isFullObjectMode(stepData) {
+    const zoom = stepData.zoom;
+    if (stepData.x === void 0 && stepData.y === void 0) {
+      return true;
+    }
+    if (zoom === void 0 || zoom === "" || zoom === null) return true;
+    const zoomNum = parseFloat(zoom);
+    if (isNaN(zoomNum) || zoomNum <= 1) return true;
+    return false;
+  }
+
+  // assets/js/telar-story/audio-layout.js
+  var _cs2 = getComputedStyle(document.documentElement);
+  var audioHeightResize = parseFloat(_cs2.getPropertyValue("--telar-audio-height-resize").trim()) || 0.5;
+  var waveSideGap = readFraction("--telar-audio-wave-side-gap", 0.01);
+  var AUDIO_CONTROLS_HEIGHT = 44;
+  var AUDIO_CONTROLS_GAP = 4;
+  function computeAudioBesideWave(W, H) {
+    return {
+      width: Math.round(W - sideCardRight(W) - W * waveSideGap),
+      height: Math.round(H * audioHeightResize)
+    };
+  }
+  function computeAudioBelowLayout(W, H, below) {
+    const pad = mediaPadding(W, H);
+    const row = AUDIO_CONTROLS_GAP + AUDIO_CONTROLS_HEIGHT;
+    const space = Math.max(0, below.cardTop - pad - below.topBand);
+    const height = Math.max(0, Math.min(Math.round(H * audioHeightResize), space - row));
+    const top = Math.round(below.topBand + (space - height - row) / 2);
+    return {
+      wave: { left: pad, top, width: W - pad * 2, height },
+      controlsBottom: Math.round(H - (top + height + row))
+    };
+  }
+  function chooseAudioArrangement(W, H, cardH, topBand) {
+    const beside = computeAudioBesideWave(W, H);
+    const below = computeAudioBelowLayout(W, H, {
+      cardTop: computeBelowCardTop(W, H, cardH),
+      topBand
+    }).wave;
+    return prefersBelow(beside.width * beside.height, below.width * below.height) ? "below" : "beside";
+  }
+
+  // assets/js/telar-story/media-arrangement.js
+  var TOP_CONTROLS = [".btn-nav-back", ".share-button", ".step-counter"];
+  var VIDEO_TYPES = /* @__PURE__ */ new Set(["youtube", "vimeo", "google-drive"]);
+  function measureControlsBottom(selectors) {
+    let bottom = 0;
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (!el) continue;
+      const box = el.getBoundingClientRect();
+      if (box.width > 0 && box.height > 0) bottom = Math.max(bottom, box.bottom);
+    }
+    return bottom;
+  }
+  function measureTopBand(W, H) {
+    return Math.round(measureControlsBottom(TOP_CONTROLS)) + mediaPadding(W, H);
+  }
+  function _plateAspect(plateEl) {
+    if (plateEl.dataset.videoLetterbox === "true") return COMPARISON_ASPECT;
+    return parseFloat(plateEl.dataset.aspectRatio) || COMPARISON_ASPECT;
+  }
+  function _clear(plateEl, cards) {
+    delete plateEl.dataset.mediaArrangement;
+    delete plateEl.dataset.mediaCardTop;
+    delete plateEl.dataset.mediaTopBand;
+    for (const card of cards) delete card.dataset.mediaArrangement;
+  }
+  function arrangeMediaScene(plateEl, cards, { W, H, eligible, besideTop, topBand: band }) {
+    const type = plateEl.dataset.cardType;
+    const isMedia = VIDEO_TYPES.has(type) || type === "audio";
+    if (!isMedia) {
+      _clear(plateEl, cards);
+      return null;
+    }
+    const topBand = band ?? measureTopBand(W, H);
+    if (!eligible || state.isEmbed || cards.length === 0) {
+      _clear(plateEl, cards);
+      plateEl.dataset.mediaTopBand = String(topBand);
+      return null;
+    }
+    const cardH = Math.max(...cards.map((card) => card.offsetHeight));
+    const arrangement = type === "audio" ? chooseAudioArrangement(W, H, cardH, topBand) : chooseVideoArrangement(W, H, _plateAspect(plateEl), cardH, topBand);
+    plateEl.dataset.mediaArrangement = arrangement;
+    plateEl.dataset.mediaCardTop = String(computeBelowCardTop(W, H, cardH));
+    plateEl.dataset.mediaTopBand = String(topBand);
+    for (const card of cards) {
+      card.dataset.mediaArrangement = arrangement;
+      const top = arrangement === "below" ? computeBelowCardTop(W, H, card.offsetHeight) : besideTop(card);
+      card.style.setProperty("top", `${top}px`, "important");
+    }
+    return arrangement;
+  }
+  function readBelow(plateEl) {
+    if (plateEl.dataset.mediaArrangement !== "below") return null;
+    if (state.layoutMode === "vertical") return null;
+    const cardTop = parseFloat(plateEl.dataset.mediaCardTop);
+    const topBand = parseFloat(plateEl.dataset.mediaTopBand);
+    if (!Number.isFinite(cardTop) || !Number.isFinite(topBand)) return null;
+    return { cardTop, topBand };
+  }
+  function readTopBand(plateEl) {
+    if (state.layoutMode === "vertical") return 0;
+    const topBand = parseFloat(plateEl.dataset.mediaTopBand);
+    return Number.isFinite(topBand) ? topBand : 0;
+  }
+  var AUDIO_BELOW_PROPS = [
+    "--telar-audio-wave-top",
+    "--telar-audio-wave-left",
+    "--telar-audio-wave-width",
+    "--telar-audio-controls-bottom"
+  ];
+  function placeAudioBelow(plateEl) {
+    const below = readBelow(plateEl);
+    if (!below) {
+      for (const prop of AUDIO_BELOW_PROPS) plateEl.style.removeProperty(prop);
+      return null;
+    }
+    const { wave, controlsBottom } = computeAudioBelowLayout(window.innerWidth, window.innerHeight, below);
+    [wave.top, wave.left, wave.width, controlsBottom].forEach((px, i) => plateEl.style.setProperty(AUDIO_BELOW_PROPS[i], `${px}px`));
+    return wave.height;
+  }
+
+  // assets/js/telar-story/card-fit.js
+  var SIDE_CARD_CONTROLS = [...TOP_CONTROLS, ".telar-embed-banner"];
+  var CONTENT_TOLERANCE_PX = 0.01;
+  var SIDE_CARD_WIDTH = _readWidthTerms();
+  function _readWidthTerms() {
+    const cs = getComputedStyle(document.documentElement);
+    const term = (name, fallback) => {
+      const value = parseFloat(cs.getPropertyValue(`--telar-card-side-${name}`));
+      return Number.isFinite(value) ? value : fallback;
+    };
+    return {
+      minShare: term("min-share", 0.37),
+      maxShare: term("max-share", 0.52),
+      base: term("base", 1544),
+      slope: term("slope", 1.6),
+      maxByHeight: term("max-by-height", 718)
+    };
+  }
+  function sideCardWidth(W, H) {
+    const { minShare, maxShare, base, slope, maxByHeight } = SIDE_CARD_WIDTH;
+    const byHeight = Math.min(maxByHeight, base - slope * H);
+    return Math.round(Math.min(maxShare * W, Math.max(minShare * W, byHeight)));
+  }
+  function publishSideCardWidth(W, H, horizontal) {
+    const root = document.documentElement.style;
+    if (horizontal) root.setProperty("--telar-card-side-width", `${sideCardWidth(W, H)}px`);
+    else root.removeProperty("--telar-card-side-width");
+  }
+  function sideCardCeiling({ H, W, C, T, fraction, pad = unroundedMediaPadding }) {
+    const room = (h) => h - C - 2 * pad(W, h) - 1;
+    return Math.floor(Math.min(room(H), Math.max(fraction * H, room(T))));
+  }
+  function sideCardTop({ H, cardH, scenePos, peek, band, pad }) {
+    const centred = (H - cardH) / 2 + scenePos * peek;
+    return Math.max(band, Math.min(centred, H - pad - cardH));
+  }
+  function _capCard(card, ceilingPx) {
+    card.style.height = "";
+    card.style.maxHeight = `${ceilingPx}px`;
+  }
+  function fitOrder(cards, activeIndex) {
+    const near = [];
+    const rest = [];
+    for (const card of cards) {
+      const i = parseInt(card.dataset.stepIndex, 10);
+      (Math.abs(i - activeIndex) <= 2 ? near : rest).push(card);
+    }
+    return near.concat(rest);
+  }
+  function fitSideCards(cards, { W, H, peek, fraction, activeIndex }) {
+    const { band, pad, ceiling } = sideCardBand({ W, H, fraction });
+    const topOf = (card) => sideCardTop({
+      H,
+      cardH: card.offsetHeight,
+      scenePos: parseInt(card.dataset.runPosition, 10) || 0,
+      peek,
+      band,
+      pad
+    });
+    for (const card of fitOrder(cards, activeIndex)) {
+      _capCard(card, ceiling);
+      recordContentHeight(card);
+      card.style.setProperty("top", `${topOf(card)}px`, "important");
+    }
+    return { band, pad, ceiling, topOf };
+  }
+  function sideCardBand({ W, H, fraction }) {
+    const C = Math.round(measureControlsBottom(SIDE_CARD_CONTROLS));
+    const pad = mediaPadding(W, H);
+    const ceiling = sideCardCeiling({ H, W, C, T: getCardLandscapeMaxHeight(), fraction });
+    return { C, pad, band: C + pad, ceiling };
+  }
+  function timeGeometryPass(pass) {
+    const perf = typeof performance !== "undefined" ? performance : null;
+    perf?.mark?.("telar-card-geometry-start");
+    pass();
+    if (!perf?.mark || !perf.measure) return;
+    perf.mark("telar-card-geometry-end");
+    perf.measure("telar-card-geometry", "telar-card-geometry-start", "telar-card-geometry-end");
+  }
+  var _recordedHeights = /* @__PURE__ */ new WeakMap();
+  function _contentWrapper(card) {
+    return card.children.length === 1 ? card.firstElementChild : null;
+  }
+  function _contentHeight(el) {
+    const cs = getComputedStyle(el);
+    let h = parseFloat(cs.height);
+    if (cs.boxSizing === "border-box") {
+      for (const side of ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"]) {
+        h -= parseFloat(cs[side]) || 0;
+      }
+    }
+    return h;
+  }
+  function recordContentHeight(card) {
+    const wrapper = _contentWrapper(card);
+    if (wrapper) _recordedHeights.set(wrapper, _contentHeight(wrapper));
+  }
+  function watchCardContent(cards, refit, { raf = (cb) => requestAnimationFrame(cb) } = {}) {
+    const list = [...cards];
+    const pending = /* @__PURE__ */ new Set();
+    let all = false;
+    let frame = 0;
+    let stopped = false;
+    const schedule = () => {
+      if (frame || stopped) return;
+      frame = raf(() => {
+        frame = 0;
+        if (stopped) return;
+        const changed = all ? null : [...pending];
+        all = false;
+        pending.clear();
+        refit(changed);
+      });
+    };
+    const RO = typeof window !== "undefined" ? window.ResizeObserver : void 0;
+    let observer = null;
+    if (typeof RO === "function") {
+      observer = new RO((entries) => {
+        for (const entry of entries) {
+          const recorded = _recordedHeights.get(entry.target);
+          if (recorded === void 0) continue;
+          if (Math.abs(entry.contentRect.height - recorded) <= CONTENT_TOLERANCE_PX) continue;
+          const card = entry.target.parentElement;
+          pending.add(card);
+        }
+        if (pending.size) schedule();
+      });
+      for (const card of list) {
+        const wrapper = _contentWrapper(card);
+        if (wrapper) observer.observe(wrapper);
+      }
+    }
+    let loadOpen = false;
+    const onFonts = () => {
+      loadOpen = false;
+      all = true;
+      schedule();
+    };
+    const onFontsLoading = () => {
+      loadOpen = true;
+      Promise.resolve(fonts?.ready).then(() => {
+        if (loadOpen) onFonts();
+      });
+    };
+    const onBanner = () => {
+      all = true;
+      schedule();
+    };
+    const fonts = document.fonts;
+    fonts?.addEventListener?.("loading", onFontsLoading);
+    fonts?.addEventListener?.("loadingdone", onFonts);
+    window.addEventListener("telar:embed-banner", onBanner);
+    return () => {
+      stopped = true;
+      observer?.disconnect();
+      fonts?.removeEventListener?.("loading", onFontsLoading);
+      fonts?.removeEventListener?.("loadingdone", onFonts);
+      window.removeEventListener("telar:embed-banner", onBanner);
+    };
+  }
+
+  // assets/js/telar-story/plates/base-plate.js
+  var Plate = class {
+    static containerClass = "base-plate";
+    /** What a screen reader is told this is, when the object says nothing. */
+    static ariaFallback = "Viewer";
+    static deps = () => Promise.resolve();
+    // libraries this type needs (subclass overrides)
+    constructor(container, objectId, sceneIndex, zIndex, initialStep) {
+      this.container = container;
+      this.objectId = objectId;
+      this.sceneIndex = sceneIndex;
+      this.zIndex = zIndex;
+      this._currentStep = initialStep;
+      this._loaded = null;
+      container.classList.add(this.constructor.containerClass);
+    }
+    /** Idempotent: load libraries + build the player once. Safe to call repeatedly. */
+    load() {
+      if (this._loaded) return this._loaded;
+      this._loaded = this.constructor.deps().then(() => this._build());
+      return this._loaded;
+    }
+    /** Tear down the player + free GPU; a later load() rebuilds. */
+    unload() {
+      if (!this._loaded) return;
+      this._teardown();
+      this._loaded = null;
+      this.container.querySelector(".telar-alert")?.remove();
+      delete this.container.dataset.loading;
+    }
+    /** Bring to the front and frame to a step (loads if needed; the framing catches up on load). */
+    center(step) {
+      this.load();
+      this.container.style.zIndex = this.zIndex;
+      this.container.style.transform = "translateY(0)";
+      this.container.classList.add("is-active");
+      this.goToStep(step, false);
+    }
+    /** Stand down where it stands: the plate covering it is what hides it. */
+    deactivate() {
+      this.container.classList.remove("is-active");
+    }
+    /** Slide off / behind, and stop any in-flight animation. */
+    sendBack() {
+      this.deactivate();
+      this.container.style.transform = "translateY(100%)";
+      this.onSendBack();
+    }
+    /** Apply a step's framing (snap, or ease when animate). */
+    goToStep(step, animate = false) {
+    }
+    /** Per-frame scroll interpolation between two steps. */
+    scroll(progress, stepA, stepB) {
+    }
+    /** React to a viewport resize. */
+    resize() {
+    }
+    /** Build the player (libraries are loaded by now). */
+    _build() {
+    }
+    /** Free the player + GPU. */
+    _teardown() {
+    }
+    /** Cleanup when sent back (e.g. stop the ease). */
+    onSendBack() {
+    }
+  };
+
+  // assets/js/telar-story/plates/media-plate.js
+  function isTruthy(val) {
+    if (val === true) return true;
+    if (typeof val === "string") {
+      const v = val.trim().toLowerCase();
+      return v === "true" || v === "yes" || v === "s\xED";
+    }
+    return false;
+  }
+  function stepClip(step) {
+    return {
+      start: parseFloat(step.clip_start) || 0,
+      end: parseFloat(step.clip_end) || 0,
+      loop: isTruthy(step.loop)
+    };
+  }
+  var MediaPlate = class extends Plate {
+    /**
+     * Build the player unless one is already there.
+     *
+     * Synchronous, and not the base class's cached promise: see the module note.
+     * A build in flight counts as a player, because each module adds its wrapper
+     * to its pool before the file loads — which is what turns the second of two
+     * callers away when a reader crosses several steps at once.
+     */
+    load() {
+      if (this._hasPlayer()) return;
+      this._build();
+    }
+    /** Stand down, and stop the player rather than leaving it running unseen. */
+    deactivate() {
+      super.deactivate();
+      this._deactivatePlayer();
+    }
+    /**
+     * Stand down and go back off screen below.
+     *
+     * The base class writes the transform and lets the transition carry it;
+     * `onSendBack` here does the move instead, so this does not call up.
+     */
+    sendBack() {
+      this.deactivate();
+      this.onSendBack();
+    }
+    /** Off screen in one frame, with the transition suppressed for the move. */
+    onSendBack() {
+      const el = this.container;
+      el.style.transition = "none";
+      el.style.transform = "translateY(100%)";
+      void el.offsetHeight;
+      el.style.transition = "";
+    }
+    /** Whether this plate's module still holds a player for it. */
+    _hasPlayer() {
+      return false;
+    }
+    /** Stop the player where it stands. */
+    _deactivatePlayer() {
+    }
+  };
+
+  // assets/js/telar-story/video-card.js
+  var _videoPlayers = [];
+  var MAX_VIDEO_PLAYERS = 3;
+  function loadYouTubeAPI() {
+    if (window._ytApiPromise) return window._ytApiPromise;
+    window._ytApiPromise = new Promise((resolve) => {
+      if (window.YT && window.YT.Player) {
+        resolve();
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://www.youtube.com/iframe_api";
+      script.async = true;
+      document.head.appendChild(script);
+      const prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = function() {
+        if (typeof prev === "function") prev();
+        resolve();
+      };
+    });
+    return window._ytApiPromise;
+  }
+  function detectYouTubeAspect(videoId) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        if (img.naturalWidth >= 320 && img.naturalHeight >= 180) {
+          resolve(img.naturalWidth / img.naturalHeight);
+        } else {
+          resolve(null);
+        }
+      };
+      img.onerror = () => resolve(null);
+      img.src = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
+    });
+  }
+  function loadVimeoAPI() {
+    if (window._vimeoApiPromise) return window._vimeoApiPromise;
+    window._vimeoApiPromise = new Promise((resolve, reject) => {
+      if (window.Vimeo && window.Vimeo.Player) {
+        resolve();
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://player.vimeo.com/api/player.js";
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Failed to load Vimeo Player API"));
+      document.head.appendChild(script);
+    });
+    return window._vimeoApiPromise;
+  }
+  function applyClipEndDim(plateEl) {
+    let overlay = plateEl.querySelector(".clip-end-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "clip-end-overlay";
+      plateEl.appendChild(overlay);
+    }
+    void overlay.offsetHeight;
+    overlay.classList.add("visible");
+  }
+  function removeClipEndDim(plateEl) {
+    const overlay = plateEl.querySelector(".clip-end-overlay");
+    if (overlay) {
+      overlay.classList.remove("visible");
+    }
+  }
+  function createVideoPlayer(plateEl, cardType, videoId, options = {}) {
+    const {
+      clipStart = 0,
+      clipEnd,
+      loop = false,
+      onPlay = () => {
+      },
+      onTimeUpdate = () => {
+      },
+      onEnded = () => {
+      },
+      onAutoplayBlocked = () => {
+      },
+      sceneIndex = 0,
+      sourceUrl = ""
+    } = options;
+    let wrapper;
+    if (cardType === "youtube") {
+      wrapper = _createYouTubePlayer(plateEl, videoId, {
+        clipStart,
+        clipEnd,
+        loop,
+        onPlay,
+        onTimeUpdate,
+        onEnded,
+        onAutoplayBlocked,
+        sceneIndex
+      });
+    } else if (cardType === "vimeo") {
+      wrapper = _createVimeoPlayer(plateEl, videoId, {
+        clipStart,
+        clipEnd,
+        loop,
+        onPlay,
+        onTimeUpdate,
+        onEnded,
+        onAutoplayBlocked,
+        sceneIndex,
+        sourceUrl
+      });
+    } else if (cardType === "google-drive") {
+      wrapper = _createGDriveEmbed(plateEl, videoId, sceneIndex);
+    } else {
+      console.error("createVideoPlayer: unknown cardType", cardType);
+      return null;
+    }
+    _videoPlayers.push(wrapper);
+    _enforcePoolLimit(sceneIndex);
+    _applyVideoLayout(plateEl);
+    return wrapper;
+  }
+  function destroyVideoPlayer(wrapper) {
+    if (!wrapper) return;
+    wrapper._destroyed = true;
+    try {
+      if (wrapper.type === "youtube" && wrapper.player) {
+        if (wrapper._rafId) cancelAnimationFrame(wrapper._rafId);
+        if (wrapper._autoplayTimeout) clearTimeout(wrapper._autoplayTimeout);
+        wrapper.player.destroy();
+      } else if (wrapper.type === "vimeo" && wrapper.player) {
+        wrapper.player.destroy();
+      } else if (wrapper.type === "google-drive") {
+        const iframe = wrapper.element.querySelector("iframe.video-iframe");
+        if (iframe) iframe.remove();
+      }
+    } catch (e) {
+      console.warn("destroyVideoPlayer: error during destroy", e);
+    }
+    const idx = _videoPlayers.indexOf(wrapper);
+    if (idx !== -1) _videoPlayers.splice(idx, 1);
+  }
+  function _showVideoPlayOverlay(plateEl) {
+    const existing = plateEl.querySelector(".video-play-overlay");
+    if (existing) {
+      existing.style.display = "flex";
+      return;
+    }
+    const overlayEl = document.createElement("div");
+    overlayEl.className = "video-play-overlay";
+    overlayEl.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:1;";
+    const _vObj = state.objectsIndex[plateEl.dataset.object] || {};
+    const _vAlt = _vObj.alt_text || _vObj.title || "video";
+    const overlayBtn = document.createElement("button");
+    overlayBtn.setAttribute("aria-label", `Play ${_vAlt}`);
+    overlayBtn.type = "button";
+    overlayBtn.style.cssText = "min-height:44px;padding:0.5rem 1.25rem;border-radius:20px;background:rgba(255,255,255,0.6);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);border:none;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,0.2);display:flex;align-items:center;gap:8px;color:#333;font-family:var(--font-body);font-size:0.9rem;";
+    overlayBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="var(--color-link)" xmlns="http://www.w3.org/2000/svg"><polygon points="5,3 19,12 5,21"/></svg><span>Play</span>';
+    overlayEl.appendChild(overlayBtn);
+    plateEl.appendChild(overlayEl);
+    overlayBtn.addEventListener("click", () => {
+      state.hasUserInteracted = true;
+      overlayEl.style.display = "none";
+      const wrapper = _getWrapperForPlate(plateEl);
+      if (wrapper && wrapper.player) {
+        try {
+          if (wrapper.type === "youtube") {
+            wrapper.player.playVideo();
+          } else if (wrapper.type === "vimeo") {
+            wrapper.player.play();
+          }
+        } catch (e) {
+        }
+      }
+    });
+  }
+  function activateVideoCard(plateEl, sceneIndex) {
+    plateEl.style.transform = "translateY(0)";
+    plateEl.classList.add("is-active");
+    _applyVideoLayout(plateEl);
+    if (state.layoutMode === "vertical" || state.isEmbed) {
+      if (!state.hasUserInteracted) {
+        _showVideoPlayOverlay(plateEl);
+        return;
+      }
+    }
+    const wrapper = _getWrapperForPlate(plateEl);
+    if (wrapper) {
+      try {
+        if (wrapper.type === "youtube" && wrapper.player) {
+          wrapper.player.playVideo();
+        } else if (wrapper.type === "vimeo" && wrapper.player) {
+          wrapper.player.play().catch(() => {
+          });
+        }
+      } catch (e) {
+      }
+    }
+  }
+  function deactivateVideoCard(plateEl) {
+    plateEl.classList.remove("is-active");
+    const wrapper = _getWrapperForPlate(plateEl);
+    if (!wrapper) return;
+    try {
+      if (wrapper.type === "youtube" && wrapper.player) {
+        wrapper.player.pauseVideo();
+      } else if (wrapper.type === "vimeo" && wrapper.player) {
+        wrapper.player.pause();
+      }
+    } catch (e) {
+    }
+  }
+  function updateVideoClip(plateEl, clipStart, clipEnd, loop) {
+    const wrapper = _getWrapperForPlate(plateEl);
+    if (!wrapper) return;
+    if (wrapper.clipStart === clipStart && wrapper.clipEnd === clipEnd && wrapper.loop === loop) {
+      return;
+    }
+    wrapper.clipStart = clipStart;
+    wrapper.clipEnd = clipEnd;
+    wrapper.loop = loop;
+    plateEl.dataset.clipStart = String(clipStart);
+    plateEl.dataset.clipEnd = String(clipEnd);
+    plateEl.dataset.loop = String(loop);
+    removeClipEndDim(plateEl);
+    try {
+      if (wrapper.type === "youtube" && wrapper.player) {
+        wrapper.player.seekTo(clipStart || 0, true);
+        if (!wrapper._rafId) {
+          wrapper.player.playVideo();
+        }
+      } else if (wrapper.type === "vimeo" && wrapper.player) {
+        wrapper.player.setCurrentTime(clipStart || 0.01).catch(() => {
+        });
+        wrapper.player.play().catch(() => {
+        });
+      }
+    } catch (e) {
+    }
+  }
+  function _createYouTubePlayer(plateEl, videoId, opts) {
+    const { clipStart, clipEnd, loop, onPlay, onTimeUpdate, onEnded, onAutoplayBlocked, sceneIndex } = opts;
+    const container = document.createElement("div");
+    container.className = "video-iframe";
+    plateEl.appendChild(container);
+    detectYouTubeAspect(videoId).then((aspect) => {
+      if (wrapper._destroyed) return;
+      if (aspect) {
+        plateEl.dataset.aspectRatio = String(aspect);
+        delete plateEl.dataset.videoLetterbox;
+      } else {
+        plateEl.dataset.videoLetterbox = "true";
+      }
+      _aspectLearned(plateEl);
+    });
+    const wrapper = {
+      type: "youtube",
+      element: plateEl,
+      player: null,
+      sceneIndex,
+      clipStart,
+      clipEnd,
+      loop,
+      _rafId: null,
+      _autoplayTimeout: null,
+      _playReceived: false,
+      _destroyed: false,
+      destroy() {
+        destroyVideoPlayer(this);
+      }
+    };
+    loadYouTubeAPI().then(() => {
+      if (wrapper._destroyed) return;
+      const cfg = buildYouTubeEmbedConfig(videoId, clipStart, clipEnd, loop);
+      wrapper.player = new window.YT.Player(container, {
+        videoId: cfg.videoId,
+        playerVars: cfg.playerVars,
+        events: {
+          onReady: (event) => {
+            wrapper._autoplayTimeout = setTimeout(() => {
+              if (!wrapper._playReceived) {
+                onAutoplayBlocked();
+              }
+            }, 2e3);
+          },
+          onStateChange: (event) => {
+            if (event.data === window.YT.PlayerState.PLAYING) {
+              wrapper._playReceived = true;
+              if (wrapper._autoplayTimeout) {
+                clearTimeout(wrapper._autoplayTimeout);
+                wrapper._autoplayTimeout = null;
+              }
+              onPlay();
+              if (wrapper.clipEnd) {
+                _startYouTubePolling(wrapper, onTimeUpdate, onEnded);
+              }
+            } else if (event.data === window.YT.PlayerState.PAUSED || event.data === window.YT.PlayerState.ENDED) {
+              if (wrapper._rafId) {
+                cancelAnimationFrame(wrapper._rafId);
+                wrapper._rafId = null;
+              }
+            }
+          }
+        }
+      });
+    });
+    return wrapper;
+  }
+  function _startYouTubePolling(wrapper, onTimeUpdate, onEnded) {
+    if (wrapper._rafId) cancelAnimationFrame(wrapper._rafId);
+    function poll() {
+      if (!wrapper.player) return;
+      try {
+        const currentTime = wrapper.player.getCurrentTime();
+        const duration = wrapper.player.getDuration();
+        onTimeUpdate(currentTime, duration);
+        if (wrapper.clipEnd && currentTime >= wrapper.clipEnd) {
+          if (wrapper.loop) {
+            wrapper.player.seekTo(wrapper.clipStart || 0, true);
+          } else {
+            wrapper.player.pauseVideo();
+            onEnded();
+            return;
+          }
+        }
+      } catch (e) {
+        return;
+      }
+      wrapper._rafId = requestAnimationFrame(poll);
+    }
+    wrapper._rafId = requestAnimationFrame(poll);
+  }
+  function _createVimeoPlayer(plateEl, videoId, opts) {
+    const { clipStart, clipEnd, loop, onPlay, onTimeUpdate, onEnded, onAutoplayBlocked, sceneIndex, sourceUrl } = opts;
+    const container = document.createElement("div");
+    container.className = "video-iframe";
+    plateEl.appendChild(container);
+    const wrapper = {
+      type: "vimeo",
+      element: plateEl,
+      player: null,
+      sceneIndex,
+      clipStart,
+      clipEnd,
+      loop,
+      _destroyed: false,
+      destroy() {
+        destroyVideoPlayer(this);
+      }
+    };
+    loadVimeoAPI().then(() => {
+      if (wrapper._destroyed) return;
+      const playerOpts = {
+        autoplay: false,
+        loop: false,
+        controls: true
+      };
+      const hashMatch = sourceUrl && sourceUrl.match(/vimeo\.com\/\d+\/([a-f0-9]+)/i);
+      if (hashMatch) {
+        playerOpts.url = `https://vimeo.com/${videoId}/${hashMatch[1]}`;
+      } else {
+        playerOpts.id = parseInt(videoId, 10) || videoId;
+      }
+      const vimeoPlayer = new window.Vimeo.Player(container, playerOpts);
+      wrapper.player = vimeoPlayer;
+      vimeoPlayer.ready().then(() => {
+        return Promise.all([
+          vimeoPlayer.getVideoWidth(),
+          vimeoPlayer.getVideoHeight()
+        ]).then(([w, h]) => {
+          if (w && h) {
+            plateEl.dataset.aspectRatio = String(w / h);
+            _aspectLearned(plateEl);
+          }
+        });
+      }).then(() => {
+        if (clipStart) {
+          vimeoPlayer.setCurrentTime(clipStart).catch(() => {
+          });
+        }
+      });
+      vimeoPlayer.on("play", () => {
+        onPlay();
+      });
+      vimeoPlayer.on("timeupdate", ({ seconds, duration }) => {
+        onTimeUpdate(seconds, duration);
+        if (wrapper.clipEnd && seconds >= wrapper.clipEnd) {
+          if (wrapper.loop) {
+            vimeoPlayer.setCurrentTime(wrapper.clipStart || 0.01).catch(() => {
+            });
+          } else {
+            vimeoPlayer.pause().catch(() => {
+            });
+            onEnded();
+          }
+        }
+      });
+      vimeoPlayer.play().catch((err) => {
+        if (err && (err.name === "NotAllowedError" || err.name === "PasswordError")) {
+          onAutoplayBlocked();
+        }
+      });
+    }).catch((err) => {
+      console.error("Failed to load Vimeo API:", err);
+    });
+    return wrapper;
+  }
+  function _createGDriveEmbed(plateEl, videoId, sceneIndex) {
+    const iframe = document.createElement("iframe");
+    iframe.className = "video-iframe";
+    iframe.src = buildGDriveEmbedUrl(videoId);
+    iframe.allow = "autoplay";
+    iframe.allowFullscreen = true;
+    iframe.style.cssText = "width:100%;height:100%;border:none;border-radius:4px";
+    plateEl.dataset.videoLetterbox = "true";
+    plateEl.appendChild(iframe);
+    return {
+      type: "google-drive",
+      element: plateEl,
+      player: null,
+      sceneIndex,
+      _destroyed: false,
+      destroy() {
+        destroyVideoPlayer(this);
+      }
+    };
+  }
+  function _enforcePoolLimit(currentScene) {
+    while (_videoPlayers.length > MAX_VIDEO_PLAYERS) {
+      let farthestIdx = 0;
+      let maxDist = -1;
+      for (let i = 0; i < _videoPlayers.length; i++) {
+        const dist = Math.abs(_videoPlayers[i].sceneIndex - currentScene);
+        if (dist > maxDist) {
+          maxDist = dist;
+          farthestIdx = i;
+        }
+      }
+      const evicted = _videoPlayers.splice(farthestIdx, 1)[0];
+      _evictPlayer(evicted);
+    }
+  }
+  function _destroyProviderPlayer(wrapper) {
+    if (wrapper.type === "youtube" && wrapper.player) {
+      if (wrapper._rafId) cancelAnimationFrame(wrapper._rafId);
+      if (wrapper._autoplayTimeout) clearTimeout(wrapper._autoplayTimeout);
+      wrapper.player.destroy();
+    } else if (wrapper.type === "vimeo" && wrapper.player) {
+      wrapper.player.destroy();
+    } else if (wrapper.type === "google-drive") {
+      const iframe = wrapper.element.querySelector("iframe.video-iframe");
+      if (iframe) iframe.remove();
+    }
+  }
+  function _evictPlayer(wrapper) {
+    wrapper._destroyed = true;
+    try {
+      _destroyProviderPlayer(wrapper);
+    } catch (e) {
+      console.warn("_evictPlayer: error during evict", e);
+    }
+    wrapper.element?.querySelector(".video-iframe")?.remove();
+  }
+  function _getWrapperForPlate(plateEl) {
+    return _videoPlayers.find((w) => w.element === plateEl) || null;
+  }
+  function hasVideoPlayer(plateEl) {
+    const wrapper = _getWrapperForPlate(plateEl);
+    return Boolean(wrapper) && !wrapper._destroyed;
+  }
+  function _applyVideoLayout(plateEl) {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const videoEl = plateEl.querySelector(".video-iframe");
+    if (!videoEl) return;
+    const below = readBelow(plateEl);
+    const topBand = readTopBand(plateEl);
+    if (plateEl.dataset.videoLetterbox === "true") {
+      const region = computeVideoLetterboxRegion(W, H, below, topBand);
+      videoEl.classList.add("video-iframe--letterbox");
+      videoEl.style.position = "absolute";
+      videoEl.style.left = `${region.left}px`;
+      videoEl.style.top = `${region.top}px`;
+      videoEl.style.width = `${region.width}px`;
+      videoEl.style.height = `${region.height}px`;
+      return;
+    }
+    videoEl.classList.remove("video-iframe--letterbox");
+    const aspectRatio = parseFloat(plateEl.dataset.aspectRatio) || 16 / 9;
+    const layout = computeVideoLayout(W, H, aspectRatio, below, topBand);
+    videoEl.style.position = "absolute";
+    videoEl.style.left = `${layout.video.left}px`;
+    videoEl.style.top = `${layout.video.top}px`;
+    videoEl.style.width = `${layout.video.width}px`;
+    videoEl.style.height = `${layout.video.height}px`;
+  }
+  function _aspectLearned(plateEl) {
+    _applyVideoLayout(plateEl);
+    plateEl.dispatchEvent(new CustomEvent("telar:media-aspect"));
+  }
+
+  // assets/js/telar-story/plates/video-plate.js
+  var VideoPlate = class extends MediaPlate {
+    static containerClass = "video-plate";
+    static ariaFallback = "Video player";
+    /** Bring the plate to the front and start its player, building it if needed. */
+    center() {
+      this.load();
+      activateVideoCard(this.container, this.sceneIndex);
+    }
+    /** Re-clip the running player to this step's window. */
+    goToStep(step) {
+      const clip = stepClip(step);
+      updateVideoClip(this.container, clip.start, clip.end || void 0, clip.loop);
+    }
+    /** Re-place the player for the scene's arrangement after a geometry pass. */
+    resize() {
+      _applyVideoLayout(this.container);
+    }
+    _hasPlayer() {
+      return hasVideoPlayer(this.container);
+    }
+    _deactivatePlayer() {
+      deactivateVideoCard(this.container);
+    }
+    _build() {
+      const el = this.container;
+      const objectData = state.objectsIndex[this.objectId] || {};
+      const sourceUrl = objectData.source_url || objectData.iiif_manifest || "";
+      const cardType = el.dataset.cardType;
+      const videoId = extractVideoId(cardType, sourceUrl);
+      if (!videoId) {
+        console.error("VideoPlate: no video ID for", this.objectId, sourceUrl);
+        return;
+      }
+      const clipStart = parseFloat(el.dataset.clipStart) || 0;
+      const clipEnd = parseFloat(el.dataset.clipEnd) || 0;
+      const loop = isTruthy(el.dataset.loop);
+      el.style.zIndex = this.zIndex;
+      createVideoPlayer(el, cardType, videoId, {
+        clipStart,
+        clipEnd: clipEnd || void 0,
+        loop,
+        sceneIndex: this.sceneIndex,
+        sourceUrl,
+        onEnded: () => {
+          applyClipEndDim(el);
+        },
+        onAutoplayBlocked: () => {
+          _showVideoPlayOverlay(el);
+        }
+      });
+    }
+  };
+
+  // assets/js/telar-story/audio-card.js
+  var _cs3 = getComputedStyle(document.documentElement);
+  var audioHeightMobile = parseFloat(_cs3.getPropertyValue("--telar-audio-height-mobile").trim()) || 0.35;
+  var audioHeightResize2 = parseFloat(_cs3.getPropertyValue("--telar-audio-height-resize").trim()) || 0.5;
+  function _audioHeightFraction() {
+    return state.layoutMode === "vertical" || state.isEmbed ? audioHeightMobile : audioHeightResize2;
+  }
+  function _placeAudio(plateEl) {
+    const belowHeight = placeAudioBelow(plateEl);
+    return belowHeight ?? Math.round(window.innerHeight * _audioHeightFraction());
+  }
+  var _audioPlayers = [];
+  var MAX_AUDIO_PLAYERS = 3;
+  var _sharedAudioContext = null;
+  function loadWaveSurferAPI() {
+    if (window._wsApiPromise) return window._wsApiPromise;
+    window._wsApiPromise = new Promise((resolve, reject) => {
+      if (window.WaveSurfer) {
+        resolve();
+        return;
+      }
+      const basePath = getBasePath();
+      const script = document.createElement("script");
+      script.src = `${basePath}/assets/vendor/wavesurfer/wavesurfer.min.js`;
+      script.async = true;
+      script.onload = () => {
+        const rScript = document.createElement("script");
+        rScript.src = `${basePath}/assets/vendor/wavesurfer/plugins/regions.min.js`;
+        rScript.async = true;
+        rScript.onload = () => resolve();
+        rScript.onerror = () => reject(new Error("WaveSurfer Regions plugin failed to load"));
+        document.head.appendChild(rScript);
+      };
+      script.onerror = () => reject(new Error("WaveSurfer failed to load"));
+      document.head.appendChild(script);
+    });
+    return window._wsApiPromise;
+  }
+  function formatElapsedTime(seconds) {
+    const total = Math.floor(seconds);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+  function deriveThemeColors(accentHex, barHex = "#ffffff") {
+    const r = parseInt(accentHex.slice(1, 3), 16);
+    const g = parseInt(accentHex.slice(3, 5), 16);
+    const b = parseInt(accentHex.slice(5, 7), 16);
+    const bgR = Math.round(r * 0.7);
+    const bgG = Math.round(g * 0.7);
+    const bgB = Math.round(b * 0.7);
+    const bR = parseInt(barHex.slice(1, 3), 16);
+    const bG = parseInt(barHex.slice(3, 5), 16);
+    const bB = parseInt(barHex.slice(5, 7), 16);
+    const upR = Math.round(bgR * 0.75 + bR * 0.25);
+    const upG = Math.round(bgG * 0.75 + bG * 0.25);
+    const upB = Math.round(bgB * 0.75 + bB * 0.25);
+    return {
+      playedColor: barHex,
+      // played bars: theme button text colour
+      unplayedColor: `rgb(${upR}, ${upG}, ${upB})`,
+      // unplayed bars: opaque blended tint
+      backgroundColor: `rgb(${bgR}, ${bgG}, ${bgB})`,
+      patternColor: "rgba(255, 255, 255, 0.12)",
+      clipRegionColor: "rgba(255, 255, 255, 0.08)"
+      // subtle clip region highlight
+    };
+  }
+  function _buildPatternDataUri(fillColor) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 543 380"><path d="M542.955,145.508l-83.257,-0.001l13.365,45.375l-12.615,43.868l82.485,0l-0,10.507l-81.743,0l7.56,40.133l-7.582,38.235l81.765,1.125l-0,10.5l-82.485,0l12.742,44.25l-14.25,0l-13.875,-44.25l-12.375,0l0,44.25l-14.25,0l0,-44.25l-52.492,0l-6.75,44.25l-14.25,0l6.75,-44.25l-41.993,0l6.75,44.25l-14.25,0l-6.75,-44.25l-88.492,0l-0,44.25l-14.25,0l-0,-44.25l-59.993,0l0,44.25l-14.25,0l0,-44.25l-34.492,0l-0,44.25l-13.5,0l-0,-44.25l-70.478,0l0,-10.5l69.368,0l1.125,-1.125l-0,-78.375l-70.493,0l0,-10.5l69.368,0l0.375,-89.25l-69.743,0l0,-10.5l69.743,0l0.75,-79.5l-70.493,0l0,-10.5l69.368,0l1.162,-2.588l-0.037,-42.412l13.5,0l-0.038,42.412l1.163,2.588l33.367,0l0,-44.993l14.25,0.001l0,45l59.993,-0l-0,-45l14.25,-0l-0,45l88.492,-0l6.743,-45l14.25,-0l-6.75,45l41.992,-0l-6.742,-45l14.25,-0l6.75,45l52.492,-0l0,-45l14.25,-0l0.375,45l12.375,-0l13.493,-45l14.25,-0l-12.743,44.992l82.485,0l0,10.508l-81.742,-0l7.522,38.594l-8.272,40.905l82.507,0l0,10.5Zm-424.47,-90l-34.492,0.001l-0,79.499l34.492,0l0,-79.5Zm74.243,0.001l-59.993,-0l0,79.499l59.993,0l-0,-79.5Zm101.242,0.001l-86.992,-0l-0.75,79.499l86.992,0l-5.317,-38.625l6.067,-40.875Zm59.243,79.508l6.48,-40.23l-6.068,-38.565l-45.337,-0.622l-6.105,40.83l5.272,38.595l45.75,-0l0.008,-0.008Zm65.242,-79.507l-50.242,-0l5.842,38.632l-6.592,40.868l50.242,-0l0.75,-79.5Zm13.493,79.5l13.875,-0l9.135,-40.223l-8.385,-39.277l-13.875,-0l-0.75,79.5Zm-313.463,10.5l-34.492,-0l-0,89.25l34.492,-0l0,-89.25Zm14.25,-0l0,89.25l59.993,-0l-0,-89.25l-59.993,-0Zm162.728,89.25l6.375,-44.655l-6.503,-43.35l-1.005,-1.245l-88.117,-0l0.75,89.25l88.5,-0Zm55.5,-89.25l-41.243,-0l6.353,44.602l-6.353,44.648l41.993,-0l-7.418,-46.208l6.668,-43.042Zm66.742,-0l-52.492,-0l-6.593,43.132l7.343,46.118l52.492,-0l-0.75,-89.25Zm27.743,89.25l13.17,-44.61l-14.295,-44.64l-12.375,-0l1.125,89.25l12.375,-0Zm-326.963,10.5l-34.492,-0l-0,79.5l34.492,-0l0,-79.5Zm74.243,-0l-59.993,-0l0,79.5l59.993,-0l-0,-79.5Zm101.242,-0l-86.992,-0l-0,79.5l86.992,-0l-5.917,-40.043l5.917,-39.457Zm14.28,79.462l45.383,-0.66l6.24,-39.345l-6.615,-39.135l-44.97,-0.24l-5.79,39.42l5.745,39.96l0.007,0Zm110.205,-79.462l-50.242,-0l6.022,40.087l-6.022,39.413l50.242,-0l0,-79.5Zm14.243,79.5l13.875,-0l8.542,-40.05l-8.542,-39.45l-13.875,-0l-0,79.5Z" fill="${fillColor}" fill-rule="nonzero"/></svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  }
+  var _icons = {
+    play: '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
+    pause: '<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>',
+    "rotate-ccw": '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+    "volume-2": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>',
+    "volume-x": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/>'
+  };
+  function _svg(name, size = 24) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${_icons[name]}</svg>`;
+  }
+  function buildAudioControlsHTML() {
+    return `<div class="audio-controls">
+  <button class="audio-btn audio-btn-play" aria-label="Play" type="button">${_svg("play", 22)}</button>
+  <button class="audio-btn audio-btn-restart" aria-label="Restart from beginning" type="button">${_svg("rotate-ccw", 20)}</button>
+  <button class="audio-btn audio-btn-mute" aria-label="Mute audio" type="button">${_svg("volume-2", 20)}</button>
+</div>`;
+  }
+  function getSharedAudioContext() {
+    if (!_sharedAudioContext) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      _sharedAudioContext = new AudioContextClass();
+    }
+    return _sharedAudioContext;
+  }
+  function _ensureWaveformContainer(plateEl) {
+    const existing = plateEl.querySelector(".waveform-container");
+    if (existing) return existing;
+    const container = document.createElement("div");
+    container.className = "waveform-container";
+    container.setAttribute("aria-hidden", "true");
+    plateEl.appendChild(container);
+    return container;
+  }
+  function createAudioPlayer(plateEl, audioUrl, peaksUrl, options = {}) {
+    const {
+      clipStart = 0,
+      clipEnd,
+      loop = false,
+      sceneIndex = 0,
+      isEmbed = false,
+      onPlay = () => {
+      },
+      onTimeUpdate = () => {
+      },
+      onEnded = () => {
+      },
+      onAutoplayBlocked = () => {
+      },
+      onError = () => {
+      }
+    } = options;
+    const wrapper = {
+      type: "audio",
+      element: plateEl,
+      ws: null,
+      sceneIndex,
+      clipStart,
+      clipEnd,
+      loop,
+      isEmbed,
+      _lastElapsedSecond: -1,
+      _fadeTimer: null,
+      _destroyed: false,
+      destroy() {
+        destroyAudioPlayer(this);
+      }
+    };
+    _audioPlayers.push(wrapper);
+    _enforceAudioPoolLimit(sceneIndex);
+    const waveContainer = _ensureWaveformContainer(plateEl);
+    loadWaveSurferAPI().then(() => {
+      if (wrapper._destroyed) return;
+      const peaksFetch = peaksUrl ? fetch(peaksUrl).then((r) => r.ok ? r.json() : null).catch(() => null) : Promise.resolve(null);
+      peaksFetch.then((peaksData) => {
+        if (wrapper._destroyed) return;
+        const styles = getComputedStyle(document.documentElement);
+        const accentColor = styles.getPropertyValue("--color-link").trim() || "#883C36";
+        const barColor = styles.getPropertyValue("--color-button-text").trim() || "#ffffff";
+        const colors = deriveThemeColors(accentColor, barColor);
+        const patternUri = _buildPatternDataUri(colors.patternColor);
+        plateEl.style.background = `${colors.backgroundColor} ${patternUri} repeat`;
+        plateEl.style.backgroundSize = "20px auto";
+        const regionsPlugin = window.WaveSurfer.Regions.create();
+        const ws = window.WaveSurfer.create({
+          container: waveContainer,
+          url: audioUrl,
+          peaks: peaksData ? peaksData.peaks : void 0,
+          waveColor: colors.unplayedColor,
+          progressColor: colors.playedColor,
+          cursorWidth: 0,
+          // hide cursor line — progress shown via bar colour change
+          barWidth: 4,
+          barGap: 5,
+          barRadius: 5,
+          height: _placeAudio(plateEl),
+          interact: false,
+          normalize: true,
+          backend: "WebAudio",
+          audioContext: getSharedAudioContext(),
+          plugins: [regionsPlugin]
+        });
+        wrapper.ws = ws;
+        wrapper._regionsPlugin = regionsPlugin;
+        wrapper._colors = colors;
+        if (plateEl.classList.contains("is-active")) {
+          activateAudioCard(plateEl, wrapper.sceneIndex);
+        }
+        if (clipStart !== void 0 && clipEnd) {
+          ws.on("ready", () => {
+            regionsPlugin.addRegion({
+              start: clipStart,
+              end: clipEnd,
+              color: colors.clipRegionColor,
+              drag: false,
+              resize: false
+            });
+          });
+        }
+        if (clipStart) {
+          ws.on("ready", () => {
+            ws.setTime(clipStart);
+          });
+        }
+        ws.on("timeupdate", (currentTime) => {
+          const elapsedSecond = Math.floor(currentTime);
+          if (elapsedSecond !== wrapper._lastElapsedSecond) {
+            wrapper._lastElapsedSecond = elapsedSecond;
+            onTimeUpdate(currentTime);
+            const elapsedEl2 = plateEl.querySelector(".audio-elapsed");
+            if (elapsedEl2)
+              elapsedEl2.textContent = formatElapsedTime(currentTime);
+          }
+          if (wrapper.clipEnd && currentTime >= wrapper.clipEnd) {
+            if (wrapper.loop) {
+              ws.setTime(wrapper.clipStart || 0);
+            } else {
+              ws.pause();
+              applyAudioClipEndDim(plateEl);
+              onEnded();
+            }
+          }
+        });
+        ws.on("play", () => {
+          onPlay();
+          removeAudioClipEndDim(plateEl);
+          const playBtn = plateEl.querySelector(".audio-btn-play");
+          if (playBtn) {
+            playBtn.innerHTML = _svg("pause", 22);
+            playBtn.setAttribute("aria-label", "Pause");
+          }
+          const overlay = plateEl.querySelector(".audio-play-overlay");
+          if (overlay) overlay.style.display = "none";
+        });
+        ws.on("pause", () => {
+          const playBtn = plateEl.querySelector(".audio-btn-play");
+          if (playBtn) {
+            playBtn.innerHTML = _svg("play", 22);
+            playBtn.setAttribute("aria-label", "Play");
+          }
+        });
+        ws.on("finish", () => {
+          if (!wrapper.clipEnd) {
+            applyAudioClipEndDim(plateEl);
+            onEnded();
+          }
+        });
+        ws.on("error", (err) => {
+          console.error("audio-card: WaveSurfer error", err);
+          _injectAudioError(plateEl);
+          onError(err);
+        });
+        let elapsedEl = plateEl.querySelector(".audio-elapsed");
+        if (!elapsedEl) {
+          elapsedEl = document.createElement("div");
+          elapsedEl.className = "audio-elapsed";
+          elapsedEl.setAttribute("aria-live", "polite");
+          elapsedEl.textContent = "0:00";
+          elapsedEl.style.cssText = "position:absolute;font-size:0.8rem;color:rgba(0,0,0,0.7);background:rgba(255,255,255,0.6);backdrop-filter:blur(4px);border-radius:20px;padding:0.4rem 0.85rem;pointer-events:none;right:16px;bottom:calc(25% - 48px);z-index:1;";
+          plateEl.appendChild(elapsedEl);
+        }
+        if (!plateEl.querySelector(".audio-controls")) {
+          const controlsWrapper = document.createElement("div");
+          controlsWrapper.innerHTML = buildAudioControlsHTML();
+          const controlsEl = controlsWrapper.firstElementChild;
+          plateEl.appendChild(controlsEl);
+          const playBtn = controlsEl.querySelector(".audio-btn-play");
+          if (playBtn) {
+            playBtn.addEventListener("click", () => {
+              state.hasUserInteracted = true;
+              ws.playPause();
+            });
+          }
+          const restartBtn = controlsEl.querySelector(".audio-btn-restart");
+          if (restartBtn) {
+            restartBtn.addEventListener("click", () => {
+              ws.setTime(wrapper.clipStart || 0);
+              ws.play();
+              removeAudioClipEndDim(plateEl);
+            });
+          }
+          const muteBtn = controlsEl.querySelector(".audio-btn-mute");
+          if (muteBtn) {
+            muteBtn.addEventListener("click", () => {
+              const nowMuted = !ws.getMuted();
+              ws.setMuted(nowMuted);
+              if (nowMuted) {
+                muteBtn.innerHTML = _svg("volume-x", 20);
+                muteBtn.setAttribute("aria-label", "Unmute audio");
+              } else {
+                muteBtn.innerHTML = _svg("volume-2", 20);
+                muteBtn.setAttribute("aria-label", "Mute audio");
+              }
+            });
+          }
+        }
+        if (!plateEl.querySelector(".audio-play-overlay")) {
+          const overlayEl = document.createElement("div");
+          overlayEl.className = "audio-play-overlay";
+          overlayEl.style.cssText = "position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:1;";
+          const _aObj = state.objectsIndex[plateEl.dataset.object] || {};
+          const _aAlt = _aObj.alt_text || _aObj.title || "audio";
+          const overlayBtn = document.createElement("button");
+          overlayBtn.setAttribute("aria-label", `Play ${_aAlt}`);
+          overlayBtn.type = "button";
+          overlayBtn.innerHTML = _svg("play", 36);
+          overlayBtn.style.cssText = "width:80px;height:80px;border-radius:50%;background:rgba(255,255,255,0.9);border:none;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,0.2);display:flex;align-items:center;justify-content:center;color:var(--color-body);";
+          overlayEl.appendChild(overlayBtn);
+          plateEl.appendChild(overlayEl);
+          overlayBtn.addEventListener("click", () => {
+            state.hasUserInteracted = true;
+            const ctx = getSharedAudioContext();
+            if (ctx.state === "suspended") {
+              ctx.resume().then(() => ws.play());
+            } else {
+              ws.play();
+            }
+            overlayEl.style.display = "none";
+          });
+        }
+        if (!plateEl.querySelector(".audio-clip-end-overlay")) {
+          const dimEl = document.createElement("div");
+          dimEl.className = "audio-clip-end-overlay";
+          dimEl.style.cssText = "position:absolute;inset:0;background:var(--color-overlay-dim);opacity:0;transition:opacity 300ms ease-in;pointer-events:none;";
+          plateEl.appendChild(dimEl);
+        }
+      });
+    }).catch((err) => {
+      console.error("audio-card: failed to load WaveSurfer API", err);
+      _injectAudioError(plateEl);
+      onError(err);
+    });
+    return wrapper;
+  }
+  function activateAudioCard(plateEl, sceneIndex) {
+    plateEl.style.transform = "translateY(0)";
+    plateEl.classList.add("is-active");
+    const wrapper = _getAudioWrapperForPlate(plateEl);
+    if (!wrapper || !wrapper.ws) return;
+    if (wrapper._fadeTimer) {
+      clearInterval(wrapper._fadeTimer);
+      wrapper._fadeTimer = null;
+      try {
+        wrapper.ws.setVolume(1);
+      } catch (e) {
+      }
+    }
+    try {
+      wrapper.ws.setOptions({ height: _placeAudio(plateEl) });
+    } catch (e) {
+    }
+    if (state.layoutMode === "vertical" || state.isEmbed) {
+      _showPlayOverlay(plateEl);
+      return;
+    }
+    try {
+      const ctx = getSharedAudioContext();
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {
+        });
+      }
+      wrapper.ws.play().catch((err) => {
+        if (err && err.name === "NotAllowedError") {
+          _showPlayOverlay(plateEl);
+          wrapper.isAutoplayBlocked = true;
+        }
+      });
+    } catch (err) {
+      if (err && err.name === "NotAllowedError") {
+        _showPlayOverlay(plateEl);
+      }
+    }
+  }
+  function deactivateAudioCard(plateEl, fadeMs = 300) {
+    plateEl.classList.remove("is-active");
+    const wrapper = _getAudioWrapperForPlate(plateEl);
+    if (!wrapper || !wrapper.ws) return;
+    const steps = Math.ceil(fadeMs / 50);
+    let step = 0;
+    const startVolume = wrapper.ws.getVolume ? wrapper.ws.getVolume() : 1;
+    if (wrapper._fadeTimer) clearInterval(wrapper._fadeTimer);
+    const timer = setInterval(() => {
+      step++;
+      const newVolume = startVolume * (1 - step / steps);
+      try {
+        wrapper.ws.setVolume(Math.max(0, newVolume));
+      } catch (e) {
+        clearInterval(timer);
+        wrapper._fadeTimer = null;
+        return;
+      }
+      if (step >= steps) {
+        clearInterval(timer);
+        wrapper._fadeTimer = null;
+        try {
+          wrapper.ws.pause();
+          wrapper.ws.setVolume(1);
+        } catch (e) {
+        }
+      }
+    }, 50);
+    wrapper._fadeTimer = timer;
+  }
+  function destroyAudioPlayer(wrapper) {
+    if (!wrapper) return;
+    wrapper._destroyed = true;
+    if (wrapper._fadeTimer) {
+      clearInterval(wrapper._fadeTimer);
+      wrapper._fadeTimer = null;
+    }
+    try {
+      if (wrapper.ws) {
+        wrapper.ws.destroy();
+      }
+    } catch (e) {
+      console.warn("destroyAudioPlayer: error during destroy", e);
+    }
+    const idx = _audioPlayers.indexOf(wrapper);
+    if (idx !== -1) _audioPlayers.splice(idx, 1);
+    _clearPlate(wrapper.element);
+  }
+  var _INJECTED_SELECTORS = [
+    ".waveform-container",
+    ".audio-controls",
+    ".audio-elapsed",
+    ".audio-play-overlay",
+    ".audio-clip-end-overlay",
+    ".telar-alert"
+  ];
+  function _clearPlate(plateEl) {
+    if (!plateEl) return;
+    _INJECTED_SELECTORS.forEach((sel) => plateEl.querySelector(sel)?.remove());
+  }
+  function updateAudioClip(plateEl, clipStart, clipEnd, loop) {
+    const wrapper = _getAudioWrapperForPlate(plateEl);
+    if (!wrapper) return;
+    if (wrapper.clipStart === clipStart && wrapper.clipEnd === clipEnd && wrapper.loop === loop) {
+      return;
+    }
+    wrapper.clipStart = clipStart;
+    wrapper.clipEnd = clipEnd;
+    wrapper.loop = loop;
+    plateEl.dataset.clipStart = String(clipStart);
+    plateEl.dataset.clipEnd = String(clipEnd);
+    plateEl.dataset.loop = String(loop);
+    removeAudioClipEndDim(plateEl);
+    if (wrapper._regionsPlugin) {
+      try {
+        wrapper._regionsPlugin.clearRegions();
+        if (clipStart !== void 0 && clipEnd && wrapper._colors) {
+          wrapper._regionsPlugin.addRegion({
+            start: clipStart,
+            end: clipEnd,
+            color: wrapper._colors.clipRegionColor,
+            drag: false,
+            resize: false
+          });
+        }
+      } catch (e) {
+      }
+    }
+    if (wrapper.ws) {
+      try {
+        wrapper.ws.setTime(clipStart || 0);
+      } catch (e) {
+      }
+    }
+  }
+  function applyAudioClipEndDim(plateEl) {
+    let overlay = plateEl.querySelector(".audio-clip-end-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "audio-clip-end-overlay";
+      overlay.style.cssText = "position:absolute;inset:0;background:var(--color-overlay-dim);opacity:0;transition:opacity 300ms ease-in;pointer-events:none;";
+      plateEl.appendChild(overlay);
+    }
+    void overlay.offsetHeight;
+    overlay.style.opacity = "1";
+  }
+  function removeAudioClipEndDim(plateEl) {
+    const overlay = plateEl.querySelector(".audio-clip-end-overlay");
+    if (overlay) overlay.style.opacity = "0";
+  }
+  function _enforceAudioPoolLimit(currentScene) {
+    while (_audioPlayers.length > MAX_AUDIO_PLAYERS) {
+      let farthestIdx = 0;
+      let maxDist = -1;
+      for (let i = 0; i < _audioPlayers.length; i++) {
+        const dist = Math.abs(_audioPlayers[i].sceneIndex - currentScene);
+        if (dist > maxDist) {
+          maxDist = dist;
+          farthestIdx = i;
+        }
+      }
+      const evicted = _audioPlayers.splice(farthestIdx, 1)[0];
+      _evictAudioPlayer(evicted);
+    }
+  }
+  function _evictAudioPlayer(wrapper) {
+    wrapper._destroyed = true;
+    if (wrapper._fadeTimer) {
+      clearInterval(wrapper._fadeTimer);
+      wrapper._fadeTimer = null;
+    }
+    try {
+      if (wrapper.ws) {
+        wrapper.ws.destroy();
+        wrapper.ws = null;
+      }
+    } catch (e) {
+      console.warn("_evictAudioPlayer: error during evict", e);
+    }
+    _clearPlate(wrapper.element);
+  }
+  function _getAudioWrapperForPlate(plateEl) {
+    return _audioPlayers.find((w) => w.element === plateEl) || null;
+  }
+  function hasAudioPlayer(plateEl) {
+    const wrapper = _getAudioWrapperForPlate(plateEl);
+    return Boolean(wrapper) && !wrapper._destroyed;
+  }
+  function _showPlayOverlay(plateEl) {
+    const overlay = plateEl.querySelector(".audio-play-overlay");
+    if (overlay) overlay.style.display = "flex";
+  }
+  function _injectAudioError(plateEl) {
+    if (plateEl.querySelector(".telar-alert")) return;
+    const alertEl = document.createElement("div");
+    alertEl.className = "alert alert-warning telar-alert";
+    alertEl.setAttribute("role", "alert");
+    alertEl.innerHTML = `<strong>Audio unavailable</strong>
+<p>This audio file could not be loaded. Continue scrolling to read the story.</p>`;
+    plateEl.appendChild(alertEl);
+  }
+  function layoutAudioPlate(plateEl) {
+    const height = _placeAudio(plateEl);
+    const wrapper = _getAudioWrapperForPlate(plateEl);
+    if (!wrapper || !wrapper.ws) return;
+    wrapper.ws.setOptions({ height });
+  }
+
+  // assets/js/telar-story/plates/audio-plate.js
+  var AudioPlate = class extends MediaPlate {
+    static containerClass = "audio-plate";
+    static ariaFallback = "Audio player";
+    /** Bring the plate to the front and start its player, building it if needed. */
+    center() {
+      this.load();
+      activateAudioCard(this.container, this.sceneIndex);
+    }
+    /** Re-clip the running player to this step's window. */
+    goToStep(step) {
+      const clip = stepClip(step);
+      updateAudioClip(this.container, clip.start, clip.end || void 0, clip.loop);
+    }
+    /** Re-place the player for the scene's arrangement after a geometry pass. */
+    resize() {
+      layoutAudioPlate(this.container);
+    }
+    _hasPlayer() {
+      return hasAudioPlayer(this.container);
+    }
+    _deactivatePlayer() {
+      deactivateAudioCard(this.container);
+    }
+    _build() {
+      const el = this.container;
+      const audioObjects = window.audioObjects || {};
+      const ext = audioObjects[this.objectId];
+      if (!ext) {
+        console.error("AudioPlate: no audio extension for", this.objectId);
+        return;
+      }
+      const basePath = getBasePath();
+      const audioUrl = `${basePath}/telar-content/objects/${this.objectId}.${ext}`;
+      const peaksUrl = (window.audioPeaks || []).includes(this.objectId) ? `${basePath}/assets/audio/peaks/${this.objectId}.json` : null;
+      const clipStart = parseFloat(el.dataset.clipStart) || 0;
+      const clipEnd = parseFloat(el.dataset.clipEnd) || 0;
+      const loop = isTruthy(el.dataset.loop);
+      const isEmbed = document.body.classList.contains("embed-mode");
+      el.style.zIndex = this.zIndex;
+      createAudioPlayer(el, audioUrl, peaksUrl, {
+        clipStart,
+        clipEnd: clipEnd || void 0,
+        loop,
+        sceneIndex: this.sceneIndex,
+        isEmbed,
+        onEnded: () => {
+          applyAudioClipEndDim(el);
+        }
+      });
+    }
+  };
+
+  // assets/js/telar-story/iiif-manifest.js
+  function extractAllPages(manifest) {
+    const v3Pages = extractV3Pages(manifest);
+    if (v3Pages.length > 0) return v3Pages;
+    const v2Pages = extractV2Pages(manifest);
+    if (v2Pages.length > 0) return v2Pages;
+    return [];
+  }
+  function extractV3Pages(manifest) {
+    const pages = [];
+    try {
+      const items = manifest.items;
+      if (!items) return pages;
+      for (const canvas of items) {
+        const annoPages = canvas.items;
+        if (!annoPages?.[0]) continue;
+        const annos = annoPages[0].items;
+        if (!annos?.[0]) continue;
+        const body = annos[0].body;
+        if (!body) continue;
+        const service = body.service;
+        if (service?.[0]?.id) {
+          pages.push({ tileSource: service[0].id + "/info.json" });
+          continue;
+        }
+        if (body.id && typeof body.id === "string" && body.type === "Image") {
+          const infoUrl = deriveInfoJsonFromImageUrl(body.id);
+          if (infoUrl) {
+            pages.push({ tileSource: infoUrl });
+            continue;
+          }
+          pages.push({ tileSource: { type: "image", url: body.id } });
+        }
+      }
+    } catch {
+    }
+    return pages;
+  }
+  function extractV2Pages(manifest) {
+    const pages = [];
+    try {
+      const sequences = manifest.sequences;
+      if (!sequences?.[0]) return pages;
+      const canvases = sequences[0].canvases;
+      if (!canvases) return pages;
+      for (const canvas of canvases) {
+        const images = canvas.images;
+        if (!images?.[0]) continue;
+        const resource = images[0].resource;
+        if (!resource) continue;
+        const service = resource.service;
+        if (service?.["@id"]) {
+          pages.push({ tileSource: service["@id"] + "/info.json" });
+          continue;
+        }
+        if (resource["@id"] && typeof resource["@id"] === "string") {
+          pages.push({ tileSource: { type: "image", url: resource["@id"] } });
+        }
+      }
+    } catch {
+    }
+    return pages;
+  }
+  function deriveInfoJsonFromImageUrl(url) {
+    const match = url.match(/^(.+\/iiif\/\d+\/[^/]+)\/[^/]+\/[^/]+\/[^/]+\/[^/]+$/);
+    if (match) return match[1] + "/info.json";
+    return null;
+  }
+
+  // assets/js/telar-story/test-hook.js
+  function testEnabled() {
+    if (typeof window === "undefined") return false;
+    if (window.__TELAR_TEST_HOOK__ === true) return true;
+    try {
+      return /[?&]telartest=1(?:&|$)/.test(window.location.search);
+    } catch {
+      return false;
+    }
+  }
+  var registry = [];
+  var installed = false;
+  function registerTestViewer(wrapper) {
+    if (!testEnabled() || !wrapper) return;
+    if (!registry.includes(wrapper)) registry.push(wrapper);
+    installTestHook();
+  }
+  function unregisterTestViewer(wrapper) {
+    const i = registry.indexOf(wrapper);
+    if (i >= 0) registry.splice(i, 1);
+  }
+  function visibleArea(el) {
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const w = Math.max(0, Math.min(vw, r.right) - Math.max(0, r.left));
+    const h = Math.max(0, Math.min(vh, r.bottom) - Math.max(0, r.top));
+    return w * h;
+  }
+  function getActiveViewer() {
+    const live = registry.filter(
+      (w) => w && w.viewer && !w._destroyed && w.containerEl && document.contains(w.containerEl)
+    );
+    if (live.length === 0) return null;
+    const plateOf = (w) => w.containerEl.closest(".viewer-plate");
+    const zOf = (w) => {
+      const p = plateOf(w);
+      const z = p ? parseInt(getComputedStyle(p).zIndex, 10) : NaN;
+      return Number.isNaN(z) ? -Infinity : z;
+    };
+    const isActive = (w) => !!plateOf(w)?.classList.contains("is-active");
+    const pool = live.some(isActive) ? live.filter(isActive) : live;
+    pool.sort(
+      (a, b) => zOf(b) - zOf(a) || visibleArea(b.containerEl) - visibleArea(a.containerEl)
+    );
+    return pool[0];
+  }
+  function isSettled() {
+    const w = getActiveViewer();
+    if (!w || !w.viewer) return false;
+    const vp = w.viewer.viewport;
+    const zc = vp.getZoom(true), zt = vp.getZoom(false);
+    const cc = vp.getCenter(true), ct = vp.getCenter(false);
+    return Math.abs(zc - zt) < 1e-4 && Math.abs(cc.x - ct.x) < 1e-4 && Math.abs(cc.y - ct.y) < 1e-4;
+  }
+  function measure(nx, ny) {
+    const w = getActiveViewer();
+    if (!w) return { error: "no-active-viewer" };
+    const v = w.viewer;
+    const OSD = window.OpenSeadragon;
+    if (!OSD || !v.world || v.world.getItemCount() === 0) return { error: "world-empty" };
+    const item = v.world.getItemAt(0);
+    const cs = item.getContentSize();
+    const vp = v.viewport;
+    const rect = w.containerEl.getBoundingClientRect();
+    const elPt = vp.imageToViewerElementCoordinates(new OSD.Point(nx * cs.x, ny * cs.y));
+    const focalScreenPx = { x: rect.left + elPt.x, y: rect.top + elPt.y };
+    const visImg = vp.viewportToImageRectangle(vp.getBounds(true));
+    const homeZoom = vp.getHomeZoom();
+    const zoom = vp.getZoom(true);
+    const cor = state.cardOverlayRect;
+    return {
+      ok: true,
+      input: { nx, ny },
+      viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 },
+      imageSize: { w: cs.x, h: cs.y, aspect: cs.x / cs.y },
+      homeZoom,
+      zoom,
+      effectiveNzoom: zoom / homeZoom,
+      // what the runtime actually rendered, vs authored
+      osdConfig: {
+        visibilityRatio: v.visibilityRatio,
+        constrainDuringPan: v.constrainDuringPan,
+        minZoomImageRatio: v.minZoomImageRatio,
+        homeFillsViewer: v.homeFillsViewer
+      },
+      viewerRect: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+      focalScreenPx,
+      focalInViewerPx: { x: elPt.x, y: elPt.y },
+      visibleImageRect: { x: visImg.x, y: visImg.y, w: visImg.width, h: visImg.height },
+      cardOverlayRect: cor ? { x: cor.x, y: cor.y, w: cor.width, h: cor.height } : null,
+      layoutMode: state.layoutMode ?? null,
+      activeTitleCardIndex: state.activeTitleCardIndex ?? null
+    };
+  }
+  var DEFAULT_SWEEP_STEPS = [
+    { step: 1, x: 0.5, y: 0.5, zoom: 1 },
+    { step: 2, x: 0.477, y: 0.125, zoom: 8.9 },
+    { step: 3, x: 0.486, y: 0.277, zoom: 10 },
+    { step: 4, x: 0.504, y: 0.415, zoom: 2.9 },
+    { step: 5, x: 0.478, y: 0.883, zoom: 10 },
+    { step: 6, x: 0.5, y: 0.5, zoom: 1 },
+    { step: 19, x: 0.516, y: 0.974, zoom: 10 },
+    { step: 20, x: 0.5, y: 0.5, zoom: 1 }
+  ];
+  async function settleAndMeasure(nx, ny, timeoutMs = 9e3) {
+    const start = Date.now();
+    let streak = 0, lastKey = null;
+    while (Date.now() - start < timeoutMs) {
+      const st = state;
+      if (isSettled() && !(st && st.isSnapping)) {
+        const m = measure(nx, ny);
+        if (m && m.ok) {
+          const key = `${Math.round(m.focalScreenPx.x)},${Math.round(m.focalScreenPx.y)},${m.zoom.toFixed(3)}`;
+          if (key === lastKey) streak++;
+          else {
+            lastKey = key;
+            streak = 0;
+          }
+          if (streak >= 3) return m;
+        }
+      } else {
+        streak = 0;
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return measure(nx, ny);
+  }
+  async function runSweep(steps) {
+    const nav = window.TelarStory && window.TelarStory.navigateToStep;
+    const out = [];
+    for (const s of steps) {
+      if (nav) nav(s.step);
+      await new Promise((r) => setTimeout(r, 450));
+      const m = await settleAndMeasure(s.x, s.y);
+      out.push({ step: s.step, authored: s, m });
+    }
+    return out;
+  }
+  function maybeAutoCollect() {
+    let params;
+    try {
+      params = new URLSearchParams(window.location.search);
+    } catch {
+      return;
+    }
+    if (!params.has("collect")) return;
+    const url = params.get("collect") || "http://127.0.0.1:8899/collect";
+    const label = params.get("label") || "device";
+    const steps = window.__TELAR_SWEEP_STEPS__ || DEFAULT_SWEEP_STEPS;
+    runSweep(steps).then((results) => {
+      const payload = {
+        label,
+        ua: navigator.userAgent,
+        viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 },
+        results
+      };
+      try {
+        navigator.sendBeacon(url, new Blob([JSON.stringify(payload)], { type: "text/plain" }));
+      } catch (e) {
+        fetch(url, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) }).catch(() => {
+        });
+      }
+    });
+  }
+  function installTestHook() {
+    if (installed || !testEnabled()) return;
+    installed = true;
+    window.__telarTestHook__ = {
+      version: "v1.4.0",
+      registry,
+      getActiveViewer,
+      isSettled,
+      /** Primary API: exact rendered position + footprint of a focal point. */
+      getFocalScreenPosition: measure,
+      measure,
+      /** Convenience: measure a list of `{nx, ny}` (or `{x, y}`) points in one call. */
+      measurePoints(points) {
+        return points.map((p) => measure(Number(p.nx ?? p.x), Number(p.ny ?? p.y)));
+      },
+      runSweep,
+      settleAndMeasure
+    };
+    setTimeout(maybeAutoCollect, 800);
+  }
+
+  // assets/js/telar-story/iiif-viewer.js
+  var IiifViewer = class _IiifViewer {
+    /**
+     * @param {IiifViewerOptions} options
+     */
+    constructor({ container, manifestUrl, startPage = 0, showChrome = false, allowZoomGestures = false, onPageShown = null }) {
+      if (!window.OpenSeadragon) {
+        throw new Error("IiifViewer: window.OpenSeadragon not loaded \u2014 vendor <script> ordering issue?");
+      }
+      this.containerEl = typeof container === "string" ? document.querySelector(container) : container;
+      if (!this.containerEl) {
+        throw new Error(`IiifViewer: container ${container} not found`);
+      }
+      this.manifestUrl = manifestUrl;
+      this.startPage = startPage;
+      this.showChrome = showChrome;
+      this.allowZoomGestures = allowZoomGestures;
+      this._onPageShown = onPageShown;
+      this.pages = [];
+      this.currentPage = startPage;
+      this.viewer = null;
+      this._destroyed = false;
+      this._chromeEl = null;
+      this._pageTransitioning = false;
+      this.ready = this._init();
+    }
+    /**
+     * Fetch the manifest, parse pages, and instantiate OpenSeadragon with
+     * Tify-faithful options. Resolves `this.ready` on success; rejects (and
+     * appends `.telar-iiif-error` to the container) on any failure.
+     */
+    async _init() {
+      try {
+        const res = await fetch(this.manifestUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const manifest = await res.json();
+        this.pages = extractAllPages(manifest);
+        if (this.pages.length === 0) throw new Error("No pages extracted from manifest");
+        this.currentPage = Math.max(0, Math.min(this.startPage, this.pages.length - 1));
+        const gestureSettingsMouse = this.allowZoomGestures ? {} : { scrollToZoom: false };
+        this.viewer = new window.OpenSeadragon({
+          element: this.containerEl,
+          tileSources: this.pages[this.currentPage].tileSource,
+          animationTime: 0.4,
+          drawer: "canvas",
+          immediateRender: true,
+          placeholderFillStyle: "grey",
+          preserveImageSizeOnResize: true,
+          preserveViewport: true,
+          showNavigationControl: false,
+          showZoomControl: false,
+          visibilityRatio: 0.2,
+          gestureSettingsMouse
+        });
+        if (!this.allowZoomGestures) {
+          this.viewer.innerTracker.scrollHandler = false;
+          this.viewer.gestureSettingsMouse.clickToZoom = false;
+        }
+        await new Promise((resolve, reject) => {
+          const onFirstOpen = (event) => {
+            this.viewer.removeHandler("open", onFirstOpen);
+            this.viewer.removeHandler("open-failed", onOpenFailed);
+            this._reportPageShown(event);
+            requestAnimationFrame(resolve);
+          };
+          const onOpenFailed = (event) => {
+            this.viewer.removeHandler("open", onFirstOpen);
+            this.viewer.removeHandler("open-failed", onOpenFailed);
+            reject(new Error("OSD open-failed: " + (event?.message || "unknown")));
+          };
+          this.viewer.addHandler("open", onFirstOpen);
+          this.viewer.addHandler("open-failed", onOpenFailed);
+        });
+        this.viewer.addHandler("open", (event) => {
+          this._pageTransitioning = false;
+          this._updateChrome();
+          this._reportPageShown(event);
+        });
+        this.viewer.addHandler("open-failed", () => {
+          this._pageTransitioning = false;
+          this._updateChrome();
+        });
+        if (this.showChrome && this.pages.length > 1) {
+          this._injectChrome();
+        }
+        registerTestViewer(this);
+      } catch (err) {
+        console.error("IiifViewer: failed to initialise", err);
+        this._injectErrorUI();
+        throw err;
+      }
+    }
+    /**
+     * Open a different page of the manifest. Silent no-op when destroyed,
+     * out of range, or already on the requested page.
+     *
+     * @param {number} n - 0-indexed page number.
+     */
+    setPage(n) {
+      if (this._destroyed) return;
+      if (n === this.currentPage || n < 0 || n >= this.pages.length) return;
+      this.currentPage = n;
+      this._pageTransitioning = true;
+      this.viewer.open(this.pages[n].tileSource);
+      this._updateChrome();
+    }
+    /**
+     * Tell the `onPageShown` caller which page an OSD 'open' event showed.
+     *
+     * OpenSeadragon 6.0.2 drops an open superseded by a later `setPage`
+     * without raising 'open' for it, so after two quick page changes the only
+     * 'open' is the later page's. The source check keeps the report tied to
+     * the page asked for last should an 'open' arrive for any other source.
+     *
+     * @param {{source?: *}} [event] - OSD 'open' event.
+     */
+    _reportPageShown(event) {
+      if (!this._onPageShown || this._destroyed) return;
+      const page = this.pages[this.currentPage];
+      if (!page || !event || event.source !== page.tileSource) return;
+      this._onPageShown(this.currentPage);
+    }
+    /**
+     * Tear down the viewer and remove injected chrome.
+     *
+     * Idempotent — second and later calls return early via the `_destroyed`
+     * flag. The viewer uses the Canvas2D drawer, so there is no
+     * WebGL context to release before teardown (OpenSeadragon issue #2693
+     * applies only to the WebGL drawer); this simply calls `viewer.destroy()`.
+     */
+    destroy() {
+      if (this._destroyed) return;
+      this._destroyed = true;
+      unregisterTestViewer(this);
+      if (this.viewer) {
+        this.viewer.destroy();
+        this.viewer = null;
+      }
+      if (this._chromeEl) {
+        this._chromeEl.remove();
+        this._chromeEl = null;
+      }
+    }
+    // ── Chrome ─────────────────────────────────────────────────────────────────
+    // Bootstrap Icons chevron paths (16×16, viewBox 0 0 16 16). Inlined so the
+    // wrapper has no SVG-loading dependency; static path data only — no user
+    // input ever reaches these strings.
+    static _CHEVRON_LEFT = "M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z";
+    static _CHEVRON_RIGHT = "M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z";
+    /**
+     * Substitute the wrapper's %{current} and %{total} placeholders in a
+     * lang-key aria template. Returns '' when the template is missing so
+     * a partially-localised installation does not write `undefined` into
+     * an aria-label.
+     *
+     * @param {string|undefined} template
+     * @param {number} current
+     * @param {number} total
+     * @returns {string}
+     */
+    _formatAriaLabel(template, current, total) {
+      if (!template) return "";
+      return template.replace("%{current}", String(current)).replace("%{total}", String(total));
+    }
+    /**
+     * Build the `<svg><path/></svg>` chevron used by prev / next buttons.
+     * createElementNS keeps the SVG in the SVG namespace; setAttribute
+     * carries no XSS risk because the `d` value is a class-level constant.
+     */
+    _makeChevronSvg(pathData) {
+      const NS = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(NS, "svg");
+      svg.setAttribute("xmlns", NS);
+      svg.setAttribute("width", "16");
+      svg.setAttribute("height", "16");
+      svg.setAttribute("viewBox", "0 0 16 16");
+      svg.setAttribute("fill", "currentColor");
+      svg.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS(NS, "path");
+      path.setAttribute("d", pathData);
+      svg.appendChild(path);
+      return svg;
+    }
+    /**
+     * Inject the prev / page-input / next pagination pills into the
+     * container. Telar-namespaced class names only (no Bootstrap utility
+     * classes). The pills float over the OSD canvas; positional
+     * styling lives in `_sass/_viewer.scss`.
+     */
+    _injectChrome() {
+      const lang = window.telarViewerLang ?? {};
+      const total = this.pages.length;
+      const current1 = this.currentPage + 1;
+      const wrap = document.createElement("div");
+      wrap.className = "telar-iiif-pagination";
+      const prevBtn = document.createElement("button");
+      prevBtn.type = "button";
+      prevBtn.className = "prev-btn";
+      prevBtn.setAttribute("aria-label", lang.prev_page ?? "Previous page");
+      prevBtn.appendChild(this._makeChevronSvg(_IiifViewer._CHEVRON_LEFT));
+      prevBtn.disabled = this.currentPage === 0;
+      prevBtn.addEventListener("click", () => {
+        if (this.currentPage > 0) this.setPage(this.currentPage - 1);
+      });
+      const labelEl = document.createElement("label");
+      labelEl.className = "visually-hidden";
+      labelEl.textContent = lang.page_input_label ?? "Page number";
+      const inputId = `telar-iiif-page-${Math.random().toString(36).slice(2, 8)}`;
+      labelEl.setAttribute("for", inputId);
+      const input = document.createElement("input");
+      input.type = "number";
+      input.className = "page-input";
+      input.id = inputId;
+      input.min = "1";
+      input.max = String(total);
+      input.value = String(current1);
+      input.setAttribute(
+        "aria-label",
+        this._formatAriaLabel(lang.page_input_aria, current1, total)
+      );
+      input.addEventListener("change", (e) => {
+        const parsed = parseInt(e.target.value, 10);
+        if (Number.isNaN(parsed)) {
+          input.value = String(this.currentPage + 1);
+          return;
+        }
+        const clamped = Math.max(1, Math.min(parsed, this.pages.length));
+        this.setPage(clamped - 1);
+      });
+      const nextBtn = document.createElement("button");
+      nextBtn.type = "button";
+      nextBtn.className = "next-btn";
+      nextBtn.setAttribute("aria-label", lang.next_page ?? "Next page");
+      nextBtn.appendChild(this._makeChevronSvg(_IiifViewer._CHEVRON_RIGHT));
+      nextBtn.disabled = this.currentPage === total - 1;
+      nextBtn.addEventListener("click", () => {
+        if (this.currentPage < this.pages.length - 1) this.setPage(this.currentPage + 1);
+      });
+      wrap.append(prevBtn, labelEl, input, nextBtn);
+      this.containerEl.append(wrap);
+      this._chromeEl = wrap;
+    }
+    /**
+     * Reflect `currentPage` and `_pageTransitioning` back into the
+     * injected chrome (input value, aria-label, prev/next disabled).
+     * No-op when chrome has not been injected (`showChrome` false or
+     * single-page manifest).
+     */
+    _updateChrome() {
+      if (!this._chromeEl) return;
+      const lang = window.telarViewerLang ?? {};
+      const total = this.pages.length;
+      const current1 = this.currentPage + 1;
+      const input = this._chromeEl.querySelector(".page-input");
+      if (input) {
+        input.value = String(current1);
+        input.setAttribute(
+          "aria-label",
+          this._formatAriaLabel(lang.page_input_aria, current1, total)
+        );
+      }
+      const prevBtn = this._chromeEl.querySelector(".prev-btn");
+      if (prevBtn) prevBtn.disabled = this.currentPage === 0 || this._pageTransitioning;
+      const nextBtn = this._chromeEl.querySelector(".next-btn");
+      if (nextBtn) nextBtn.disabled = this.currentPage === total - 1 || this._pageTransitioning;
+    }
+    // ── Error UI ───────────────────────────────────────────────────────────────
+    /**
+     * Append `.telar-iiif-error` to the container when manifest fetch or
+     * OSD instantiation fails. Uses `textContent` for every string and
+     * never assembles HTML strings; reads localised text from
+     * `window.telarViewerLang` with inline English fallbacks so the wrapper
+     * degrades gracefully if the lang injection is missing.
+     */
+    _injectErrorUI() {
+      const div = document.createElement("div");
+      div.className = "telar-iiif-error";
+      div.setAttribute("role", "alert");
+      div.setAttribute("aria-live", "polite");
+      const lang = window.telarViewerLang ?? {};
+      const strong = document.createElement("strong");
+      strong.textContent = lang.image_unavailable_title ?? "Image unavailable";
+      const p = document.createElement("p");
+      p.textContent = lang.image_unavailable_detail ?? "The IIIF image could not be loaded.";
+      div.append(strong, p);
+      this.containerEl.append(div);
+    }
+  };
+
+  // assets/js/telar-story/plates/iiif-plate.js
+  var _viewerSeq = 0;
+  var IiifPlate = class extends Plate {
+    // The class every viewer plate already carries. Named here so the base
+    // constructor has something true to add rather than a class of its own.
+    static containerClass = "viewer-plate";
+    static ariaFallback = "Image viewer";
+    constructor(container, objectId, sceneIndex, zIndex, initialStep) {
+      super(container, objectId, sceneIndex, zIndex, initialStep);
+      this.page = void 0;
+      this.osdWrapper = null;
+      this.osdViewer = null;
+      this.isReady = false;
+      this.pendingZoom = null;
+      this.restingAt = null;
+    }
+    /** The plate element, under the name `iiif-card.js` reads it by. */
+    get element() {
+      return this.container;
+    }
+    /**
+     * Build the viewer for a step, unless this plate already has one.
+     *
+     * Synchronous rather than the base class's promise: this type has no
+     * libraries to fetch, and every caller here builds and moves on.
+     *
+     * @param {Object} step - The step whose framing and page the viewer opens at
+     */
+    load(step) {
+      if (this.osdWrapper) return;
+      this._build(step);
+    }
+    /** Free the viewer and its GPU memory; the plate element stays in the DOM. */
+    unload() {
+      stopCameraMove(this);
+      this.osdWrapper?.destroy();
+      this.osdWrapper = null;
+      this.osdViewer = null;
+      this.isReady = false;
+      this.pendingZoom = null;
+      this.restingAt = null;
+      this.container.querySelector(".viewer-instance")?.remove();
+      delete this.container.dataset.loading;
+    }
+    /**
+     * Bring the plate's viewer to a step, building it if it has none.
+     *
+     * The card stack has already moved the element; what is left is the viewer
+     * inside it. Snapped rather than animated, because a plate arriving is not
+     * panning across an image the reader is already looking at.
+     *
+     * @param {Object} step - Step data
+     */
+    center(step) {
+      if (this.osdWrapper) {
+        this.goToStep(step, true);
+        return;
+      }
+      this.load(step);
+    }
+    /**
+     * Frame the viewer on a step.
+     *
+     * A viewer that is not ready yet is given the framing to apply when it is:
+     * the build is asynchronous and a reader can cross several steps before it
+     * resolves, so the last framing queued is the one that lands.
+     *
+     * Nothing is written while the scroll engine is driving, because it moves
+     * this viewer itself, frame by frame, through `lerpIiifPosition`. A second
+     * writer there would fight it. Snapping is the exception: a plate arriving
+     * has to be placed whatever else is happening.
+     *
+     * @param {Object} step - Step data
+     * @param {boolean} [snap=false] - Arrive at it rather than travel to it
+     */
+    goToStep(step, snap2 = false) {
+      if (state.scrollDriven && !snap2) return;
+      const { x, y, zoom } = stepFraming(step);
+      if (!this.isReady) {
+        this.pendingZoom = { x, y, zoom, snap: snap2 };
+        return;
+      }
+      if (snap2) {
+        snapIiifToPosition(this, x, y, zoom);
+      } else {
+        animateIiifToPosition(this, x, y, zoom);
+      }
+    }
+    /**
+     * The div OSD mounts into.
+     *
+     * A plate whose viewer was evicted keeps its own element but loses this child,
+     * so re-entering the scene builds a fresh one. A plate that still has one is
+     * given the new viewer's id rather than a second div.
+     *
+     * @param {string} viewerId
+     * @returns {HTMLElement}
+     */
+    _viewerInstanceDiv(viewerId) {
+      const existing = this.container.querySelector(".viewer-instance");
+      if (existing) {
+        existing.id = viewerId;
+        return existing;
+      }
+      const viewerDiv = document.createElement("div");
+      viewerDiv.className = "viewer-instance";
+      viewerDiv.id = viewerId;
+      this.container.appendChild(viewerDiv);
+      return viewerDiv;
+    }
+    _build(step) {
+      const { x, y, zoom, page } = stepFraming(step);
+      const plateEl = this.container;
+      const manifestUrl = getManifestUrl(this.objectId, page);
+      if (!manifestUrl) {
+        console.error("IiifPlate: no manifest URL for", this.objectId);
+        return;
+      }
+      plateEl.dataset.loading = "true";
+      const viewerId = `iiif-viewer-${_viewerSeq++}`;
+      this._viewerInstanceDiv(viewerId);
+      const startPage = page && page > 1 ? page - 1 : 0;
+      const osdWrapper = new IiifViewer({
+        container: "#" + viewerId,
+        manifestUrl,
+        startPage,
+        showChrome: false
+      });
+      this.page = page || void 0;
+      this.osdWrapper = osdWrapper;
+      this.osdViewer = null;
+      this.isReady = false;
+      this.pendingZoom = { x, y, zoom, snap: true };
+      osdWrapper.ready.then(() => {
+        this.osdViewer = osdWrapper.viewer;
+        this.isReady = true;
+        delete plateEl.dataset.loading;
+        const stop = () => stopCameraMove(this);
+        osdWrapper.viewer.addHandler("canvas-press", stop);
+        osdWrapper.viewer.addHandler("canvas-pinch", stop);
+        if (!this.pendingZoom) return;
+        const pz = this.pendingZoom;
+        if (pz.snap) {
+          snapIiifToPosition(this, pz.x, pz.y, pz.zoom);
+        } else {
+          animateIiifToPosition(this, pz.x, pz.y, pz.zoom);
+        }
+        this._verifyFramingLanded();
+      }).catch((err) => {
+        console.error(`IiifPlate: IiifViewer failed for ${this.objectId}:`, err);
+        this.isReady = true;
+        delete plateEl.dataset.loading;
+      });
+    }
+    /**
+     * Re-apply the opening framing if the viewer's home fit overwrote it.
+     *
+     * A second check on top of the rAF-deferred `.ready`: the viewer can still
+     * end up at home zoom. One frame after the apply, compare the current zoom
+     * against home; matching — with an authored zoom meaningfully above it —
+     * means the apply was dropped. Tolerance is 5% of home zoom, and the
+     * re-apply happens exactly once.
+     *
+     * `pendingZoom` is cleared only afterwards, so the values are still there
+     * for the re-apply if it is needed.
+     */
+    _verifyFramingLanded() {
+      requestAnimationFrame(() => {
+        const pz = this.pendingZoom;
+        if (pz && this.osdViewer) {
+          const vp = this.osdViewer.viewport;
+          const homeZoom = vp.getHomeZoom();
+          const curZoom = vp.getZoom(true);
+          const TOL = 0.05;
+          const authoredIsZoomed = pz.zoom > 1.1;
+          const droppedToHome = Math.abs(curZoom - homeZoom) < homeZoom * TOL;
+          if (authoredIsZoomed && droppedToHome) {
+            if (pz.snap) {
+              snapIiifToPosition(this, pz.x, pz.y, pz.zoom);
+            } else {
+              animateIiifToPosition(this, pz.x, pz.y, pz.zoom);
+            }
+          }
+        }
+        this.pendingZoom = null;
+      });
+    }
+  };
+
+  // assets/js/telar-story/card-pool.js
+  function computeZIndexPlan(steps) {
+    let scene = -1;
+    let scenePos = 0;
+    let currentObjectId = null;
+    let titleCounter = 0;
+    const plateZ = {};
+    const textCardZ = {};
+    for (let i = 0; i < steps.length; i++) {
+      const objectId = steps[i].object || "";
+      const effectiveId = objectId === "" ? "__title_" + titleCounter++ + "__" : objectId;
+      if (effectiveId !== currentObjectId) {
+        scene++;
+        scenePos = 0;
+        currentObjectId = effectiveId;
+      }
+      if (scene === 97) {
+        console.warn("[Telar] Story has more than 98 unique scenes; z-index ranges are clamped at 9800 and panel/UI chrome layering may overlap.");
+      }
+      const rangeBase = Math.min((scene + 1) * 100, 9800);
+      plateZ[i] = rangeBase;
+      textCardZ[i] = rangeBase + 1 + scenePos;
+      scenePos++;
+    }
+    return { plateZ, textCardZ };
+  }
+  function seededRandom(seed) {
+    const n = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return n - Math.floor(n);
+  }
+  function getCardMessiness(seed, messinessPercent) {
+    if (messinessPercent === 0) return { rot: 0, offX: 0, offY: 0 };
+    const factor = messinessPercent / 100;
+    const maxRot = 1.2 * factor;
+    const maxOffX = 8 * factor;
+    const maxOffY = 4 * factor;
+    const rot = seededRandom(seed * 3 + 1) * maxRot * 2 - maxRot;
+    const offX = seededRandom(seed * 3 + 2) * maxOffX * 2 - maxOffX;
+    const offY = seededRandom(seed * 3 + 3) * maxOffY * 2 - maxOffY;
+    return { rot, offX, offY };
+  }
+  function _cardScenePosition(card) {
+    return parseInt(card.dataset.runPosition, 10) || 0;
+  }
+  function computeCardTop(viewportH, cardH, scenePosition, peekHeightPx) {
+    const centred = (viewportH - cardH) / 2;
+    return centred + scenePosition * peekHeightPx;
+  }
+  function _buildAriaLabel(objectId, stepAlt, PlateClass) {
+    if (stepAlt) return stepAlt;
+    const obj = state.objectsIndex[objectId] || {};
+    if (obj.alt_text) return obj.alt_text;
+    if (obj.title) return obj.title;
+    if (objectId) return objectId;
+    return PlateClass.ariaFallback;
+  }
+  var _stepsData = [];
+  var _config = { peekHeight: 1, messiness: 20, preloadSteps: 5 };
+  var _zPlan = { viewerPlateZ: {}, textCardZ: {} };
+  var _prefetchedScenes = /* @__PURE__ */ new Set();
+  function _buildSceneMaps(steps) {
+    let scene = -1;
+    let currentObjectId = null;
+    let titleCounter = 0;
+    state.stepToScene = {};
+    state.sceneToObject = {};
+    state.sceneFirstStep = {};
+    for (let i = 0; i < steps.length; i++) {
+      const objectId = steps[i].object || "";
+      const effectiveId = objectId === "" ? "__title_" + titleCounter++ + "__" : objectId;
+      if (effectiveId !== currentObjectId) {
+        scene++;
+        currentObjectId = effectiveId;
+        state.sceneToObject[scene] = objectId;
+        state.sceneFirstStep[scene] = i;
+      }
+      state.stepToScene[i] = scene;
+    }
+    state.totalScenes = scene + 1;
+  }
+  function getSceneIndex(stepIndex) {
+    return state.stepToScene[stepIndex] ?? -1;
+  }
+  function _plateForScene(sceneIndex) {
+    return sceneIndex >= 0 ? state.viewerPlates[sceneIndex] : null;
+  }
+  function _isTitleStep(stepIndex) {
+    if (stepIndex < 0 || stepIndex >= _stepsData.length) return false;
+    return !(_stepsData[stepIndex].object || "");
+  }
+  function _standingPlate(stepIndex) {
+    for (let i = Math.min(stepIndex, _stepsData.length - 1); i >= 0; i--) {
+      const plate = _plateForScene(getSceneIndex(i));
+      if (plate) return plate;
+    }
+    return null;
+  }
+  function buildTransform(messiness, baseTranslate) {
+    return `${baseTranslate} rotate(${messiness.rot}deg) translate(${messiness.offX}px, ${messiness.offY}px)`;
+  }
+  function _liftBase(progress) {
+    return progress ? `translateY(${-progress * 100}vh)` : "translateY(0)";
+  }
+  function _liftProgress() {
+    const p = state.scrollProgress;
+    return Number.isFinite(p) ? Math.min(1, Math.max(0, p)) : 0;
+  }
+  function _coveredCardLifts(stepIndex) {
+    const over = stepIndex + 1;
+    if (stepIndex < 0 || over >= _stepsData.length) return false;
+    if (getSceneIndex(stepIndex) === getSceneIndex(over)) return true;
+    return _isTitleStep(over) && !!_plateForScene(getSceneIndex(stepIndex));
+  }
+  function placeCard(el, base) {
+    const transform = buildTransform(_readCardMessiness(el), base);
+    if (el.style.transform !== transform) el.style.transform = transform;
+  }
+  function cardBaseFor(cardIndex, stepIndex, progress = 0) {
+    if (cardIndex > stepIndex + 1) return "translateY(100vh)";
+    if (cardIndex === stepIndex + 1) return `translateY(${(1 - progress) * 100}vh)`;
+    if (cardIndex === stepIndex) {
+      return _liftBase(_coveredCardLifts(cardIndex) ? progress : 0);
+    }
+    return _liftBase(_coveredCardLifts(cardIndex) ? 1 : 0);
+  }
+  function _cardStepIndex(el) {
+    const i = parseInt(el.dataset.stepIndex, 10);
+    return Number.isInteger(i) ? i : -1;
+  }
+  function _readCardMessiness(el) {
+    return {
+      rot: parseFloat(el.dataset.messinessRot || 0),
+      offX: parseFloat(el.dataset.messinessOffX || 0),
+      offY: parseFloat(el.dataset.messinessOffY || 0)
+    };
+  }
+  var SIDE_CARD_VIEWPORT_FRACTION = 0.8;
+  function _sizeCardToContent(card, viewportH, scenePos, peekHeight, bandGeo = null) {
+    card.style.height = "";
+    if (bandGeo) card.style.maxHeight = `${bandGeo.ceiling}px`;
+    else card.style.removeProperty("max-height");
+    const cardH = card.offsetHeight;
+    const topPx = bandGeo ? sideCardTop({ H: viewportH, cardH, scenePos, peek: peekHeight, band: bandGeo.band, pad: bandGeo.pad }) : computeCardTop(viewportH, cardH, scenePos, peekHeight);
+    card.style.setProperty("top", `${topPx}px`, "important");
+  }
+  function _recomputeCardGeometry(viewportW, viewportH, changed = null) {
+    timeGeometryPass(() => _geometryPass(viewportW, viewportH, changed));
+  }
+  function _geometryPass(viewportW, viewportH, changed) {
+    const peekHeight = _config.peekHeight;
+    const phoneHeightSideCard = isPhoneHeightSideCard();
+    const horizontal = getLayoutMode() !== "vertical";
+    publishSideCardWidth(viewportW, viewportH, horizontal);
+    const cards = document.querySelectorAll(".text-card");
+    const side = horizontal ? fitSideCards(changed || cards, {
+      W: viewportW,
+      H: viewportH,
+      peek: peekHeight,
+      fraction: SIDE_CARD_VIEWPORT_FRACTION,
+      activeIndex: state.currentIndex
+    }) : null;
+    const phoneBand = _phoneBandFor(phoneHeightSideCard, viewportW, viewportH);
+    if (!horizontal) {
+      for (const card of cards) {
+        _fitCardByLayout(card, viewportH, peekHeight, phoneHeightSideCard, phoneBand);
+      }
+    }
+    _arrangeMediaScenes(cards, viewportW, viewportH, horizontal, side);
+  }
+  function _phoneBandFor(eligible, viewportW, viewportH) {
+    return eligible && getLayoutMode() === "vertical" && viewportW > viewportH ? sideCardBand({ W: viewportW, H: viewportH, fraction: SIDE_CARD_VIEWPORT_FRACTION }) : null;
+  }
+  function _fitCardByLayout(card, viewportH, peekHeight, phoneHeightSideCard, phoneBand) {
+    const scenePos = parseInt(card.dataset.runPosition, 10) || 0;
+    if (phoneHeightSideCard) {
+      _sizeCardToContent(card, viewportH, scenePos, peekHeight, phoneBand);
+    } else {
+      card.style.removeProperty("top");
+      card.style.removeProperty("max-height");
+      card.style.height = `${viewportH * SIDE_CARD_VIEWPORT_FRACTION}px`;
+    }
+  }
+  function _arrangeMediaScenes(cards, viewportW, viewportH, contentSized, side) {
+    const cardsByScene = {};
+    for (const card of cards) {
+      const scene = getSceneIndex(parseInt(card.dataset.stepIndex, 10));
+      (cardsByScene[scene] ||= []).push(card);
+    }
+    const besideTop = side?.topOf;
+    const topBand = measureTopBand(viewportW, viewportH);
+    for (const [scene, plate] of Object.entries(state.viewerPlates)) {
+      if (!(plate instanceof MediaPlate)) continue;
+      arrangeMediaScene(plate.container, cardsByScene[scene] || [], {
+        W: viewportW,
+        H: viewportH,
+        eligible: contentSized,
+        besideTop,
+        topBand
+      });
+      plate.resize();
+    }
+  }
+  function _detectStepCardType(objectId, step, audioObjects) {
+    const objectData = state.objectsIndex[objectId] || {};
+    const audioExt = audioObjects[objectId];
+    return detectCardType({
+      objectId,
+      cardType: step.cardType,
+      source_url: objectData.source_url || objectData.iiif_manifest || "",
+      file_path: audioExt ? `objects/${objectId}.${audioExt}` : ""
+    });
+  }
+  var _PLATE_TYPES = {
+    "youtube": VideoPlate,
+    "vimeo": VideoPlate,
+    "google-drive": VideoPlate,
+    "audio": AudioPlate
+  };
+  function _plateClassFor(cardType) {
+    return _PLATE_TYPES[cardType] || IiifPlate;
+  }
+  function _markMediaPlate(plate, cardType, firstStep) {
+    if (!_PLATE_TYPES[cardType]) return;
+    if (firstStep.clip_start) plate.dataset.clipStart = firstStep.clip_start;
+    if (firstStep.clip_end) plate.dataset.clipEnd = firstStep.clip_end;
+    if (firstStep.loop) plate.dataset.loop = firstStep.loop;
+  }
+  function _createViewerPlates(steps, cardStack, audioObjects) {
+    for (let sceneIdx = 0; sceneIdx < state.totalScenes; sceneIdx++) {
+      const firstStepIdx = state.sceneFirstStep[sceneIdx];
+      const objectId = state.sceneToObject[sceneIdx];
+      if (!objectId) continue;
+      const firstStep = steps[firstStepIdx];
+      const sceneCardType = _detectStepCardType(objectId, firstStep, audioObjects);
+      const plate = document.createElement("div");
+      plate.className = "viewer-plate";
+      plate.dataset.object = objectId;
+      plate.dataset.scene = String(sceneIdx);
+      plate.dataset.cardType = sceneCardType;
+      plate.style.zIndex = _zPlan.plateZ[firstStepIdx];
+      plate.setAttribute("role", "img");
+      plate.setAttribute(
+        "aria-label",
+        _buildAriaLabel(objectId, firstStep.alt_text, _plateClassFor(sceneCardType))
+      );
+      plate.style.transform = "translateY(100%)";
+      _markMediaPlate(plate, sceneCardType, firstStep);
+      cardStack.appendChild(plate);
+      if (_PLATE_TYPES[sceneCardType]) {
+        plate.addEventListener("telar:media-aspect", () => {
+          _recomputeCardGeometry(window.innerWidth, window.innerHeight);
+        });
+      }
+      const PlateClass = _plateClassFor(sceneCardType);
+      state.viewerPlates[sceneIdx] = new PlateClass(
+        plate,
+        objectId,
+        sceneIdx,
+        _zPlan.plateZ[firstStepIdx],
+        firstStep
+      );
+    }
+  }
+  function _createTextCards(steps, cardStack, audioObjects, messinessPercent) {
+    const nextScenePosition = {};
+    for (let stepIdx = 0; stepIdx < steps.length; stepIdx++) {
+      const step = steps[stepIdx];
+      const objectId = step.object || "";
+      if (!objectId) {
+        const zIndex2 = _zPlan.textCardZ[stepIdx];
+        const titleCard = document.createElement("div");
+        titleCard.className = "title-card";
+        titleCard.dataset.stepIndex = String(stepIdx);
+        titleCard.dataset.cardType = "title";
+        titleCard.style.zIndex = zIndex2;
+        titleCard.style.transform = "translateY(100vh)";
+        titleCard.innerHTML = _buildTitleCardContent(step);
+        cardStack.appendChild(titleCard);
+        state.titleCards[stepIdx] = titleCard;
+        continue;
+      }
+      const objectIndex = getSceneIndex(stepIdx);
+      if (!Object.hasOwn(nextScenePosition, objectIndex)) {
+        nextScenePosition[objectIndex] = 0;
+      }
+      const scenePos = nextScenePosition[objectIndex];
+      nextScenePosition[objectIndex]++;
+      const zIndex = _zPlan.textCardZ[stepIdx];
+      const messiness = getCardMessiness(stepIdx, messinessPercent);
+      const card = document.createElement("div");
+      card.className = "text-card";
+      card.dataset.stepIndex = stepIdx;
+      card.dataset.object = objectId;
+      card.dataset.runPosition = scenePos;
+      card.style.zIndex = zIndex;
+      card.style.transform = buildTransform(messiness, "translateY(100vh)");
+      card.dataset.messinessRot = messiness.rot;
+      card.dataset.messinessOffX = messiness.offX;
+      card.dataset.messinessOffY = messiness.offY;
+      const hiddenStep = document.querySelector(`.step-data .story-step[data-step="${step.step}"]`);
+      if (hiddenStep) {
+        const content = hiddenStep.querySelector(".step-content");
+        if (content) {
+          card.appendChild(content.cloneNode(true));
+        } else {
+          card.innerHTML = buildTextCardContent(step);
+        }
+      } else {
+        card.innerHTML = buildTextCardContent(step);
+      }
+      cardStack.appendChild(card);
+      state.textCards[stepIdx] = card;
+    }
+  }
+  function _resolveCardConfig(config) {
+    return {
+      peekHeight: config?.peekHeight ?? 1,
+      messiness: config?.messiness ?? 20,
+      preloadSteps: state.config.preloadSteps || 5
+    };
+  }
+  function _preloadFirstScenePlate(steps) {
+    if (steps.length === 0) return;
+    const firstStep = steps[0];
+    const firstObjectId = firstStep.object || "";
+    const plate = state.viewerPlates[0];
+    if (!firstObjectId || !plate) return;
+    plate.load(firstStep);
+    _evictBeyondPoolCap(0);
+  }
+  var _stopGeometryWatch = null;
+  function _teardownGeometryWatch() {
+    _stopGeometryWatch?.();
+    _stopGeometryWatch = null;
+  }
+  function initCardPool(storyData, config) {
+    const cardStack = document.querySelector(".card-stack");
+    if (!cardStack) return;
+    _teardownGeometryWatch();
+    const steps = (storyData?.steps || []).filter((s) => !s._metadata);
+    _stepsData = steps;
+    state.stepsData = steps;
+    _config = _resolveCardConfig(config);
+    _zPlan = computeZIndexPlan(steps);
+    _buildSceneMaps(steps);
+    state.titleCards = {};
+    state.activeTitleCardIndex = null;
+    const audioObjects = window.audioObjects || {};
+    _createViewerPlates(steps, cardStack, audioObjects);
+    _createTextCards(steps, cardStack, audioObjects, _config.messiness);
+    _preloadFirstScenePlate(steps);
+    const stopResize = onViewportResize(({ viewport }) => {
+      _recomputeCardGeometry(viewport.w, viewport.h);
+      const activeCard = document.querySelector(".text-card.is-active");
+      state.cardOverlayRect = activeCard ? activeCard.getBoundingClientRect() : null;
+      reSnapActiveViewer();
+    });
+    const stopLayout = onLayoutChange(({ viewport }) => {
+      _recomputeCardGeometry(viewport.w, viewport.h);
+    });
+    _recomputeCardGeometry(window.innerWidth, window.innerHeight);
+    const stopWatch = watchCardContent(Object.values(state.textCards), (changed) => {
+      _recomputeCardGeometry(window.innerWidth, window.innerHeight, changed);
+    });
+    _stopGeometryWatch = () => {
+      stopResize();
+      stopLayout();
+      stopWatch();
+    };
+    setMoveSeconds(moveSeconds(0), cardStack);
+  }
+  function buildTextCardContent(step) {
+    const question = escapeHtml(step.question || "");
+    const answer = step.answer || "";
+    const hasLayer1 = step.layer1_button && step.layer1_button.trim();
+    const hasLayer2 = step.layer2_button && step.layer2_button.trim();
+    let layerButtons = "";
+    if (hasLayer1) {
+      layerButtons += `<button class="panel-trigger" data-panel="layer1" data-step="${step.step}">${escapeHtml(step.layer1_button)}</button>`;
+    }
+    if (hasLayer2) {
+      layerButtons += `<button class="panel-trigger" data-panel="layer2" data-step="${step.step}">${escapeHtml(step.layer2_button)}</button>`;
+    }
+    return `
+    <div class="step-question">${question}</div>
+    <div class="step-answer${step.answer_long ? " step-answer--long" : ""}">${answer}</div>
+    ${layerButtons ? `<div class="step-actions">${layerButtons}</div>` : ""}
+  `;
+  }
+  function _buildTitleCardContent(step) {
+    const heading = escapeHtml(step.question || "");
+    const body = step.answer || "";
+    return `
+    <div class="title-card-inner">
+      <h2 class="title-card-heading">${heading}</h2>
+      ${body ? '<div class="title-card-body">' + body + "</div>" : ""}
+    </div>
+  `;
+  }
+  function _retargetPlateForStep(plate, objectId, step, stepIndex) {
+    plate?.goToStep(step);
+  }
+  function _deactivateTitleCard(titleCard, direction) {
+    titleCard.classList.remove("is-active");
+    if (direction === "backward") {
+      titleCard.style.transform = "translateY(100vh)";
+      titleCard.classList.remove("is-stacked");
+    } else {
+      titleCard.classList.add("is-stacked");
+    }
+  }
+  function _clearActiveTitleCard(direction) {
+    if (state.activeTitleCardIndex == null) return;
+    const prevTitle = state.titleCards[state.activeTitleCardIndex];
+    if (prevTitle) _deactivateTitleCard(prevTitle, direction);
+    state.activeTitleCardIndex = null;
+  }
+  function releaseTitleCardsForIntro() {
+    _clearActiveTitleCard("backward");
+    const first = state.titleCards[0];
+    if (first) _deactivateTitleCard(first, "backward");
+  }
+  function _snapTransform(el, transform) {
+    el.style.transition = "none";
+    el.style.transform = transform;
+    void el.offsetHeight;
+    el.style.transition = "";
+  }
+  function reconcileStackForJump(targetIndex) {
+    const moved = [];
+    for (let i = 0; i < _stepsData.length; i++) {
+      if (i === targetIndex) continue;
+      const el = state.textCards[i] || state.titleCards[i];
+      if (!el) continue;
+      const below = i < targetIndex;
+      el.classList.remove("is-active");
+      el.classList.toggle("is-stacked", below);
+      el.style.transition = "none";
+      el.style.transform = buildTransform(
+        _readCardMessiness(el),
+        cardBaseFor(i, targetIndex)
+      );
+      moved.push(el);
+    }
+    if (moved.length) {
+      void moved[0].offsetHeight;
+      for (const el of moved) el.style.transition = "";
+    }
+    if (state.activeTitleCardIndex !== targetIndex) state.activeTitleCardIndex = null;
+  }
+  function reconcilePlatesForJump(targetIndex) {
+    const targetScene = state.stepToScene[targetIndex];
+    const moved = [];
+    for (const [sceneIndex, plate] of Object.entries(state.viewerPlates)) {
+      if (!plate || Number(sceneIndex) === targetScene) continue;
+      const el = plate.container;
+      el.style.transition = "none";
+      el.style.transform = "translateY(100%)";
+      plate.deactivate();
+      moved.push(el);
+    }
+    if (moved.length) {
+      void moved[0].offsetHeight;
+      for (const el of moved) el.style.transition = "";
+    }
+  }
+  function _restoreBackwardTarget(cardEl) {
+    if (cardEl.classList.contains("is-stacked") || cardEl.classList.contains("is-active")) return;
+    const idx = _cardStepIndex(cardEl);
+    _snapTransform(cardEl, buildTransform(
+      _readCardMessiness(cardEl),
+      cardBaseFor(idx, idx + 1)
+    ));
+  }
+  function _activateForward(index2, direction, card, step, objectId, prevObjectId, needsNewViewer) {
+    if (needsNewViewer) {
+      _activateNewViewerPlate(objectId, index2, prevObjectId, step, direction);
+      state.currentObjectScene = { objectId, scenePosition: _cardScenePosition(card) };
+      _deactivatePreviousTextCard(index2, direction);
+      _clearActiveTitleCard(direction);
+      _activateTextCard(card);
+      updateObjectCredits(objectId);
+    } else {
+      state.currentObjectScene.scenePosition = _cardScenePosition(card);
+      _deactivatePreviousTextCard(index2, direction);
+      _activateTextCard(card);
+      const plate = _plateForScene(getSceneIndex(index2));
+      if (plate && !plate.container.classList.contains("is-active")) {
+        plate.container.style.transform = "translateY(0)";
+        plate.container.classList.add("is-active");
+      }
+      _retargetPlateForStep(plate, objectId, step, index2);
+    }
+  }
+  function _swapPlatesBackward(currentPlate, prevPlate, index2) {
+    currentPlate?.sendBack();
+    if (prevPlate) {
+      const el = prevPlate.container;
+      el.style.zIndex = _zPlan.plateZ[index2];
+      el.style.transition = "none";
+      el.style.transform = "translateY(0)";
+      void el.offsetHeight;
+      el.style.transition = "";
+      el.classList.add("is-active");
+      if (prevPlate instanceof MediaPlate) prevPlate.center();
+    }
+  }
+  function _activateBackward(index2, direction, card, step, objectId, prevObjectId, needsNewViewer) {
+    _restoreBackwardTarget(card);
+    if (needsNewViewer) {
+      const currentSceneIndex = getSceneIndex(index2 + 1);
+      const currentPlate = currentSceneIndex >= 0 ? state.viewerPlates[currentSceneIndex] : null;
+      const prevPlate = state.viewerPlates[getSceneIndex(index2)];
+      _swapPlatesBackward(currentPlate, prevPlate, index2);
+      state.currentObjectScene = { objectId, scenePosition: _cardScenePosition(card) };
+      _deactivatePreviousTextCard(index2, direction);
+      _clearActiveTitleCard(direction);
+      _activateTextCard(card);
+      updateObjectCredits(objectId);
+    } else {
+      state.currentObjectScene.scenePosition = _cardScenePosition(card);
+      _deactivatePreviousTextCard(index2, direction);
+      _activateTextCard(card);
+      _retargetPlateForStep(_plateForScene(getSceneIndex(index2)), objectId, step, index2);
+    }
+  }
+  function _needsNewViewer(step, prevStep, objectId, prevObjectId) {
+    const currentMode = isFullObjectMode(step);
+    const prevMode = prevStep ? isFullObjectMode(prevStep) : null;
+    const isModeChange = prevMode !== null && currentMode !== prevMode;
+    const isObjectChange = objectId !== prevObjectId;
+    return isObjectChange || isModeChange;
+  }
+  function _refreshPlateAriaLabel(index2, objectId) {
+    const plate = state.viewerPlates[state.stepToScene[index2]];
+    if (!plate) return;
+    const stepAlt = (_stepsData[index2] || {}).alt_text || "";
+    plate.container.setAttribute(
+      "aria-label",
+      _buildAriaLabel(objectId, stepAlt, plate.constructor)
+    );
+  }
+  function activateCard(index2, direction) {
+    if (state.titleCards[index2]) {
+      _activateTitleCardStep(index2, direction);
+      return;
+    }
+    const card = state.textCards[index2];
+    if (!card) return;
+    const step = _stepsData[index2] || {};
+    const prevStep = index2 > 0 ? _stepsData[index2 - 1] : null;
+    const objectId = card.dataset.object;
+    const prevObjectId = state.currentObjectScene.objectId;
+    const needsNewViewer = _needsNewViewer(step, prevStep, objectId, prevObjectId);
+    const args = [
+      index2,
+      direction,
+      card,
+      step,
+      objectId,
+      prevObjectId,
+      needsNewViewer
+    ];
+    if (direction === "forward") {
+      _activateForward(...args);
+    } else {
+      _activateBackward(...args);
+    }
+    _refreshPlateAriaLabel(index2, objectId);
+    preloadAhead(index2, _config.preloadSteps, 2);
+  }
+  function _settlePlates(stepIndex, progress) {
+    const place = (plate, y) => {
+      if (!plate) return;
+      const el = plate.container;
+      const transform = `translateY(${y}%)`;
+      if (el.style.transform !== transform) el.style.transform = transform;
+    };
+    const here = getSceneIndex(stepIndex);
+    const next = getSceneIndex(stepIndex + 1);
+    const after = getSceneIndex(stepIndex + 2);
+    const standing = _standingPlate(stepIndex);
+    if (_isTitleStep(stepIndex)) place(standing, -100);
+    else if (_isTitleStep(stepIndex + 1)) place(standing, -progress * 100);
+    else place(standing, 0);
+    if (next !== here && !_isTitleStep(stepIndex + 1)) {
+      place(_plateForScene(next), (1 - progress) * 100);
+    }
+    if (after !== next && !_isTitleStep(stepIndex + 2)) {
+      place(_plateForScene(after), 100);
+    }
+  }
+  function setCardProgress(stepIndex, progress) {
+    const cardStack = document.querySelector(".card-stack");
+    const scrubbing = !!cardStack && cardStack.classList.contains("is-scrubbing");
+    if (!scrubbing && progress >= 1e-3) return;
+    settleCards(stepIndex + 1 + progress);
+  }
+  function settleCards(position) {
+    const contentPos = position - 1;
+    const stepIndex = Math.floor(contentPos);
+    const progress = contentPos - stepIndex;
+    for (let i = 0; i <= stepIndex + 2; i++) {
+      const el = state.textCards[i] || state.titleCards[i];
+      if (!el) continue;
+      placeCard(el, cardBaseFor(i, stepIndex, progress));
+    }
+    _settlePlates(stepIndex, progress);
+  }
+  function _wireViewerForPlate(newPlate, sceneIndex, step) {
+    newPlate.center(step);
+    _evictBeyondPoolCap(sceneIndex);
+  }
+  function _slideInNewPlate(newPlate, prevPlate, sceneIndex, direction) {
+    const el = newPlate.container;
+    if (direction === "forward") {
+      if (sceneIndex === 0) {
+        const currentTransform = el.style.transform;
+        if (!currentTransform || currentTransform === "translateY(100%)") {
+          el.style.transform = "translateY(100%)";
+          void el.offsetHeight;
+        }
+      } else {
+        el.style.transform = "translateY(100%)";
+        void el.offsetHeight;
+      }
+      el.style.transform = "translateY(0)";
+    } else {
+      el.style.transform = "translateY(0)";
+      if (prevPlate) {
+        prevPlate.container.style.transform = "translateY(100%)";
+      }
+    }
+  }
+  function _deactivateDepartingPlate(plate) {
+    plate.deactivate();
+  }
+  function _activateNewViewerPlate(objectId, stepIndex, prevObjectId, step, direction) {
+    const sceneIndex = getSceneIndex(stepIndex);
+    const prevSceneIndex = stepIndex > 0 ? getSceneIndex(stepIndex - 1) : -1;
+    const prevPlate = _plateForScene(prevSceneIndex);
+    const newPlate = _plateForScene(sceneIndex);
+    if (!newPlate) return;
+    newPlate.container.style.zIndex = _zPlan.plateZ[stepIndex];
+    const samePlate = prevPlate && prevPlate === newPlate;
+    if (samePlate) {
+      newPlate.container.style.transform = "translateY(0)";
+    } else {
+      _slideInNewPlate(newPlate, prevPlate, sceneIndex, direction);
+    }
+    newPlate.container.classList.add("is-active");
+    if (prevPlate && !samePlate) _deactivateDepartingPlate(prevPlate);
+    _wireViewerForPlate(newPlate, sceneIndex, step);
+  }
+  function _evictBeyondPoolCap(currentScene) {
+    const loaded = () => Object.values(state.viewerPlates).filter((p) => p instanceof IiifPlate && p.osdWrapper);
+    let live = loaded();
+    while (live.length > state.config.maxViewerCards) {
+      let farthest = live[0];
+      let maxDist = -1;
+      for (const plate of live) {
+        const dist = Math.abs(plate.sceneIndex - currentScene);
+        if (dist > maxDist) {
+          maxDist = dist;
+          farthest = plate;
+        }
+      }
+      farthest.unload();
+      live = loaded();
+    }
+  }
+  function _deactivatePreviousTextCard(newIndex, direction) {
+    const el = document.querySelector(".text-card.is-active");
+    if (!el || Number(el.dataset.stepIndex) === newIndex) return;
+    el.classList.remove("is-active");
+    el.classList.toggle("is-stacked", direction !== "backward");
+    placeCard(el, cardBaseFor(Number(el.dataset.stepIndex), newIndex));
+  }
+  function _writeCardOverlayRect(cardEl) {
+    const hadRect = state.cardOverlayRect != null;
+    state.cardOverlayRect = cardEl.getBoundingClientRect();
+    if (!hadRect) reSnapActiveViewer();
+  }
+  function _activateTextCard(cardEl) {
+    const messiness = _readCardMessiness(cardEl);
+    if (cardEl.scrollTop !== 0) cardEl.scrollTop = 0;
+    cardEl.classList.remove("is-stacked");
+    cardEl.classList.add("is-active");
+    const prefersReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const isScrubbing = document.querySelector(".card-stack")?.classList.contains("is-scrubbing");
+    const idx = _cardStepIndex(cardEl);
+    cardEl.style.transform = buildTransform(
+      messiness,
+      cardBaseFor(idx, idx, isScrubbing ? _liftProgress() : 0)
+    );
+    if (prefersReduced || isScrubbing) {
+      _writeCardOverlayRect(cardEl);
+      return;
+    }
+    if (cardEl._transitionEndHandler) {
+      cardEl.removeEventListener("transitionend", cardEl._transitionEndHandler);
+    }
+    const onTransitionEnd = (ev) => {
+      if (ev.target !== cardEl || ev.propertyName !== "transform") return;
+      cardEl.removeEventListener("transitionend", onTransitionEnd);
+      cardEl._transitionEndHandler = null;
+      if (cardEl.classList.contains("is-active")) _writeCardOverlayRect(cardEl);
+    };
+    cardEl._transitionEndHandler = onTransitionEnd;
+    cardEl.addEventListener("transitionend", onTransitionEnd);
+  }
+  function _stackPreviousTitleCard(index2, direction) {
+    if (state.activeTitleCardIndex == null || state.activeTitleCardIndex === index2) return;
+    const prevTitle = state.titleCards[state.activeTitleCardIndex];
+    if (prevTitle) _deactivateTitleCard(prevTitle, direction);
+  }
+  function _hideDepartingPlateForTitle(index2, direction) {
+    const departingStepIndex = direction === "backward" ? index2 + 1 : index2 - 1;
+    const departingSceneIndex = departingStepIndex >= 0 ? getSceneIndex(departingStepIndex) : -1;
+    const departingPlate = _plateForScene(departingSceneIndex);
+    if (!departingPlate) return;
+    if (direction === "backward") {
+      const el = departingPlate.container;
+      el.style.transition = "none";
+      el.style.transform = "translateY(100%)";
+      void el.offsetHeight;
+      el.style.transition = "";
+    }
+    _deactivateDepartingPlate(departingPlate);
+  }
+  function _activateTitleCardStep(index2, direction) {
+    const titleCard = state.titleCards[index2];
+    if (!titleCard) return;
+    if (direction === "backward") _restoreBackwardTarget(titleCard);
+    _stackPreviousTitleCard(index2, direction);
+    _deactivatePreviousTextCard(index2, direction);
+    _hideDepartingPlateForTitle(index2, direction);
+    titleCard.classList.remove("is-stacked");
+    titleCard.classList.add("is-active");
+    titleCard.style.transform = "translateY(0)";
+    state.activeTitleCardIndex = index2;
+    state.currentObjectScene = { objectId: "", scenePosition: 0 };
+    state.cardOverlayRect = null;
+    updateObjectCredits("");
+    preloadAhead(index2, _config.preloadSteps, 2);
+  }
+  function _warmScene(targetScene) {
+    const plate = state.viewerPlates[targetScene];
+    if (!plate) return;
+    const firstStepIdx = state.sceneFirstStep[targetScene];
+    const step = _stepsData[firstStepIdx];
+    const objectId = step.object || "";
+    if (!objectId) return;
+    plate.load(step);
+    _evictBeyondPoolCap(targetScene);
+    if (plate instanceof IiifPlate) _prefetchTilesForScene(targetScene);
+  }
+  function preloadAhead(currentIndex, ahead, behind) {
+    const currentScene = getSceneIndex(currentIndex);
+    if (currentScene < 0) return;
+    for (let offset = 1; offset <= ahead; offset++) {
+      const targetScene = currentScene + offset;
+      if (targetScene >= state.totalScenes) break;
+      _warmScene(targetScene);
+    }
+    for (let offset = ahead + 1; offset <= ahead + 2; offset++) {
+      const tileScene = currentScene + offset;
+      if (tileScene >= state.totalScenes) break;
+      _prefetchTilesForScene(tileScene);
+    }
+    for (let offset = 1; offset <= behind; offset++) {
+      const targetScene = currentScene - offset;
+      if (targetScene < 0) break;
+      _warmScene(targetScene);
+    }
+  }
+  function _prefetchTilesForScene(sceneIndex) {
+    if (_prefetchedScenes.has(sceneIndex)) return;
+    _prefetchedScenes.add(sceneIndex);
+    const objectId = state.sceneToObject[sceneIndex];
+    if (!objectId) return;
+    const objData = state.objectsIndex[objectId];
+    if (objData?.iiif_manifest || objData?.source_url) return;
+    const basePath = getBasePath();
+    const baseUrl = `${window.location.origin}${basePath}/iiif/objects/${objectId}`;
+    const infoUrl = `${baseUrl}/info.json`;
+    fetch(infoUrl).then((r) => r.json()).then((info) => {
+      const firstStepIdx = state.sceneFirstStep[sceneIndex];
+      const step = _stepsData[firstStepIdx];
+      if (!step) return;
+      const x = parseFloat(step.x);
+      const y = parseFloat(step.y);
+      const zoom = parseFloat(step.zoom);
+      if (isNaN(x) || isNaN(y) || isNaN(zoom)) return;
+      const urls = _computeTileUrls(baseUrl, info, x, y, zoom, _plateViewerSize(sceneIndex));
+      for (const url of urls) {
+        const link = document.createElement("link");
+        link.rel = "prefetch";
+        link.as = "image";
+        link.href = url;
+        document.head.appendChild(link);
+      }
+    }).catch(() => {
+    });
+  }
+  function _plateViewerSize(sceneIndex) {
+    const el = state.viewerPlates[sceneIndex]?.container;
+    if (el?.clientWidth > 0 && el.clientHeight > 0) {
+      return { width: el.clientWidth, height: el.clientHeight };
+    }
+    return { width: window.innerWidth, height: window.innerHeight };
+  }
+  function _tileSourceShape(info) {
+    return {
+      imageW: info.width,
+      imageH: info.height,
+      tileSize: info.tiles?.[0]?.width || 512,
+      scaleFactors: info.tiles?.[0]?.scaleFactors || [1],
+      version: _imageApiVersion(info)
+    };
+  }
+  function _imageApiVersion(info) {
+    const context = [].concat(info["@context"] || []).join(" ");
+    return context.includes("/image/3/") || info.type === "ImageService3" ? 3 : 2;
+  }
+  function _tileUrl(baseUrl, { imageW, imageH, tileSize, version: version2 }, tile, scaleFactor) {
+    const levelW = Math.ceil(imageW / scaleFactor);
+    const levelH = Math.ceil(imageH / scaleFactor);
+    const oneTile = levelW < tileSize && levelH < tileSize;
+    const region = oneTile || tile.x === 0 && tile.y === 0 && tile.w === imageW && tile.h === imageH ? "full" : `${tile.x},${tile.y},${tile.w},${tile.h}`;
+    const outW = oneTile ? levelW : Math.ceil(tile.w / scaleFactor);
+    const outH = oneTile ? levelH : Math.ceil(tile.h / scaleFactor);
+    let size;
+    if (version2 === 3) {
+      size = outW === imageW && outH === imageH ? "max" : `${outW},${outH}`;
+    } else {
+      size = outW === imageW ? "full" : `${outW},`;
+    }
+    return `${baseUrl}/${region}/${size}/0/default.jpg`;
+  }
+  function _prefetchFraming(imageW, imageH, x, y, zoom, container) {
+    const vpW = window.innerWidth;
+    const vpH = window.innerHeight;
+    const r = state.cardOverlayRect;
+    const cardBox = r ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
+    const placementMode = _deriveCardPlacement(cardBox, vpW, vpH);
+    const viewer = container || { width: vpW, height: vpH };
+    const target = computeFocalTarget(x, y, zoom, imageW, imageH, cardBox, placementMode);
+    const shown = target && visibleImageRegion(target, zoom, viewer);
+    if (shown) return { region: shown, scale: framePlacement(target, zoom, viewer).s };
+    const centreX = x * imageW;
+    const centreY = y * imageH;
+    const scale = zoom * (vpW / imageW);
+    const halfW = vpW / scale / 2;
+    const halfH = vpH / scale / 2;
+    return {
+      region: {
+        left: Math.max(0, centreX - halfW),
+        top: Math.max(0, centreY - halfH),
+        right: Math.min(imageW, centreX + halfW),
+        bottom: Math.min(imageH, centreY + halfH)
+      },
+      scale
+    };
+  }
+  var OSD_MIN_PIXEL_RATIO = 0.5;
+  function _drawnScaleFactor(scaleFactors, scale) {
+    const maxLevel = Math.round(Math.log(Math.max(...scaleFactors, 1)) * Math.LOG2E);
+    const density = Math.max(window.devicePixelRatio || 1, 1);
+    const ratioAtLevel0 = density * scale * Math.pow(2, maxLevel);
+    const level = Math.min(
+      Math.abs(maxLevel),
+      Math.abs(Math.floor(Math.log(ratioAtLevel0 / OSD_MIN_PIXEL_RATIO) / Math.log(2)))
+    );
+    return Math.pow(2, maxLevel - level);
+  }
+  function _cellRange(region, effectiveTile, imageW, imageH) {
+    const columns = Math.ceil(imageW / effectiveTile);
+    const rows = Math.ceil(imageH / effectiveTile);
+    return {
+      x0: Math.min(Math.floor(region.left / effectiveTile), columns - 1),
+      x1: Math.min(Math.floor(region.right / effectiveTile), columns - 1) + 1,
+      y0: Math.min(Math.floor(region.top / effectiveTile), rows - 1),
+      y1: Math.min(Math.floor(region.bottom / effectiveTile), rows - 1) + 1
+    };
+  }
+  function _cellBound(tileSize, viewer) {
+    const density = Math.max(window.devicePixelRatio || 1, 1);
+    const smallestTile = tileSize * OSD_MIN_PIXEL_RATIO / density;
+    return (Math.ceil(viewer.width / smallestTile) + 1) * (Math.ceil(viewer.height / smallestTile) + 1);
+  }
+  function _tileUrlsForRegion(baseUrl, region, shape, scaleFactor, limit) {
+    const { imageW, imageH, tileSize } = shape;
+    const effectiveTile = tileSize * scaleFactor;
+    const { x0, x1, y0, y1 } = _cellRange(region, effectiveTile, imageW, imageH);
+    const urls = [];
+    for (let tx = x0; tx < x1; tx++) {
+      for (let ty = y0; ty < y1; ty++) {
+        const rx = tx * effectiveTile;
+        const ry = ty * effectiveTile;
+        const rw = Math.min(effectiveTile, imageW - rx);
+        const rh = Math.min(effectiveTile, imageH - ry);
+        if (rw <= 0 || rh <= 0) continue;
+        urls.push(_tileUrl(baseUrl, shape, { x: rx, y: ry, w: rw, h: rh }, scaleFactor));
+        if (urls.length >= limit) return urls;
+      }
+    }
+    return urls;
+  }
+  function _computeTileUrls(baseUrl, info, x, y, zoom, container) {
+    const shape = _tileSourceShape(info);
+    const viewer = container || { width: window.innerWidth, height: window.innerHeight };
+    const { region, scale } = _prefetchFraming(shape.imageW, shape.imageH, x, y, zoom, viewer);
+    const scaleFactor = _drawnScaleFactor(shape.scaleFactors, scale);
+    return _tileUrlsForRegion(baseUrl, region, shape, scaleFactor, _cellBound(shape.tileSize, viewer));
+  }
+
+  // assets/js/telar-story/camera-travel.js
+  var RHO = Math.SQRT2;
+  function _camera({ s, anchorImg, anchorPx }, region) {
+    return {
+      u: {
+        x: anchorImg.x + (region.x + region.w / 2 - anchorPx.x) / s,
+        y: anchorImg.y + (region.y + region.h / 2 - anchorPx.y) / s
+      },
+      w: region.w / s
+    };
+  }
+  function placementTravel(from, to, region) {
+    if (!(region.w > 0 && region.h > 0 && from.s > 0 && to.s > 0)) return 0;
+    const a = _camera(from, region);
+    const b = _camera(to, region);
+    const pan = RHO * RHO * Math.hypot(b.u.x - a.u.x, b.u.y - a.u.y);
+    return Math.acosh(1 + (pan * pan + (b.w - a.w) ** 2) / (2 * a.w * b.w)) / RHO;
+  }
+  function stepTravel(stepIndex) {
+    const steps = state.stepsData;
+    const scene = state.stepToScene[stepIndex];
+    if (scene === void 0 || scene !== state.stepToScene[stepIndex + 1]) return 0;
+    const a = steps[stepIndex] && _authoredFraming(steps[stepIndex]);
+    const b = steps[stepIndex + 1] && _authoredFraming(steps[stepIndex + 1]);
+    const plate = state.viewerPlates[scene];
+    if (!a || !b || !plate?.isReady || !plate.osdViewer) return 0;
+    const from = _livePlacement(plate, a.x, a.y, a.zoom);
+    const to = _livePlacement(plate, b.x, b.y, b.zoom);
+    return from && to ? placementTravel(from.placement, to.placement, from.region) : 0;
+  }
+  function travelBetween(from, to) {
+    const lo = Math.min(from, to);
+    const hi = Math.max(from, to);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return 0;
+    let total = 0;
+    for (let i = Math.floor(lo); i < hi; i++) {
+      total += (Math.min(hi, i + 1) - Math.max(lo, i)) * stepTravel(i);
+    }
+    return total;
+  }
+
+  // node_modules/lenis/dist/lenis.mjs
+  var version = "1.3.26";
+  function clamp(min, input, max) {
+    return Math.max(min, Math.min(input, max));
+  }
+  function lerp(x, y, t) {
+    return (1 - t) * x + t * y;
+  }
+  function damp(x, y, lambda, deltaTime) {
+    return lerp(x, y, 1 - Math.exp(-lambda * deltaTime));
+  }
+  function modulo(n, d) {
+    return (n % d + d) % d;
+  }
+  var Animate = class {
+    isRunning = false;
+    value = 0;
+    from = 0;
+    to = 0;
+    currentTime = 0;
+    lerp;
+    duration;
+    easing;
+    onUpdate;
+    /**
+    * Advance the animation by the given delta time
+    *
+    * @param deltaTime - The time in seconds to advance the animation
+    */
+    advance(deltaTime) {
+      if (!this.isRunning) return;
+      let completed = false;
+      if (this.duration && this.easing) {
+        this.currentTime += deltaTime;
+        const linearProgress = clamp(0, this.currentTime / this.duration, 1);
+        completed = linearProgress >= 1;
+        const easedProgress = completed ? 1 : this.easing(linearProgress);
+        this.value = this.from + (this.to - this.from) * easedProgress;
+      } else if (this.lerp) {
+        this.value = damp(this.value, this.to, this.lerp * 60, deltaTime);
+        if (Math.round(this.value) === Math.round(this.to)) {
+          this.value = this.to;
+          completed = true;
+        }
+      } else {
+        this.value = this.to;
+        completed = true;
+      }
+      if (completed) this.stop();
+      this.onUpdate?.(this.value, completed);
+    }
+    /** Stop the animation */
+    stop() {
+      this.isRunning = false;
+    }
+    /**
+    * Set up the animation from a starting value to an ending value
+    * with optional parameters for lerping, duration, easing, and onUpdate callback
+    *
+    * @param from - The starting value
+    * @param to - The ending value
+    * @param options - Options for the animation
+    */
+    fromTo(from, to, { lerp: lerp2, duration, easing, onStart, onUpdate }) {
+      this.from = this.value = from;
+      this.to = to;
+      this.lerp = lerp2;
+      this.duration = duration;
+      this.easing = easing;
+      this.currentTime = 0;
+      this.isRunning = true;
+      onStart?.();
+      this.onUpdate = onUpdate;
+    }
+  };
+  function debounce(callback, delay) {
+    let timer;
+    return function(...args) {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = void 0;
+        callback.apply(this, args);
+      }, delay);
+    };
+  }
+  var Dimensions = class {
+    width = 0;
+    height = 0;
+    scrollHeight = 0;
+    scrollWidth = 0;
+    debouncedResize;
+    wrapperResizeObserver;
+    contentResizeObserver;
+    constructor(wrapper, content, { autoResize = true, debounce: debounceValue = 250 } = {}) {
+      this.wrapper = wrapper;
+      this.content = content;
+      if (autoResize) {
+        this.debouncedResize = debounce(this.resize, debounceValue);
+        if (this.wrapper instanceof Window) window.addEventListener("resize", this.debouncedResize);
+        else {
+          this.wrapperResizeObserver = new ResizeObserver(this.debouncedResize);
+          this.wrapperResizeObserver.observe(this.wrapper);
+        }
+        this.contentResizeObserver = new ResizeObserver(this.debouncedResize);
+        this.contentResizeObserver.observe(this.content);
+      }
+      this.resize();
+    }
+    destroy() {
+      this.wrapperResizeObserver?.disconnect();
+      this.contentResizeObserver?.disconnect();
+      if (this.wrapper === window && this.debouncedResize) window.removeEventListener("resize", this.debouncedResize);
+    }
+    resize = () => {
+      this.onWrapperResize();
+      this.onContentResize();
+    };
+    onWrapperResize = () => {
+      if (this.wrapper instanceof Window) {
+        this.width = window.innerWidth;
+        this.height = window.innerHeight;
+      } else {
+        this.width = this.wrapper.clientWidth;
+        this.height = this.wrapper.clientHeight;
+      }
+    };
+    onContentResize = () => {
+      if (this.wrapper instanceof Window) {
+        this.scrollHeight = this.content.scrollHeight;
+        this.scrollWidth = this.content.scrollWidth;
+      } else {
+        this.scrollHeight = this.wrapper.scrollHeight;
+        this.scrollWidth = this.wrapper.scrollWidth;
+      }
+    };
+    get limit() {
+      return {
+        x: this.scrollWidth - this.width,
+        y: this.scrollHeight - this.height
+      };
+    }
+  };
+  var Emitter = class {
+    events = {};
+    /**
+    * Emit an event with the given data
+    * @param event Event name
+    * @param args Data to pass to the event handlers
+    */
+    emit(event, ...args) {
+      const callbacks = this.events[event] || [];
+      for (let i = 0, length = callbacks.length; i < length; i++) callbacks[i]?.(...args);
+    }
+    /**
+    * Add a callback to the event
+    * @param event Event name
+    * @param cb Callback function
+    * @returns Unsubscribe function
+    */
+    on(event, cb) {
+      if (this.events[event]) this.events[event].push(cb);
+      else this.events[event] = [cb];
+      return () => {
+        this.events[event] = this.events[event]?.filter((i) => cb !== i);
+      };
+    }
+    /**
+    * Remove a callback from the event
+    * @param event Event name
+    * @param callback Callback function
+    */
+    off(event, callback) {
+      this.events[event] = this.events[event]?.filter((i) => callback !== i);
+    }
+    /**
+    * Remove all event listeners and clean up
+    */
+    destroy() {
+      this.events = {};
+    }
+  };
+  var LINE_HEIGHT = 100 / 6;
+  var listenerOptions = { passive: false };
+  function getDeltaMultiplier(deltaMode, size) {
+    if (deltaMode === 1) return LINE_HEIGHT;
+    if (deltaMode === 2) return size;
+    return 1;
+  }
+  var VirtualScroll = class {
+    touchStart = {
+      x: 0,
+      y: 0
+    };
+    lastDelta = {
+      x: 0,
+      y: 0
+    };
+    window = {
+      width: 0,
+      height: 0
+    };
+    emitter = new Emitter();
+    constructor(element, options = {
+      wheelMultiplier: 1,
+      touchMultiplier: 1
+    }) {
+      this.element = element;
+      this.options = options;
+      window.addEventListener("resize", this.onWindowResize);
+      this.onWindowResize();
+      this.element.addEventListener("wheel", this.onWheel, listenerOptions);
+      this.element.addEventListener("touchstart", this.onTouchStart, listenerOptions);
+      this.element.addEventListener("touchmove", this.onTouchMove, listenerOptions);
+      this.element.addEventListener("touchend", this.onTouchEnd, listenerOptions);
+    }
+    /**
+    * Add an event listener for the given event and callback
+    *
+    * @param event Event name
+    * @param callback Callback function
+    */
+    on(event, callback) {
+      return this.emitter.on(event, callback);
+    }
+    /** Remove all event listeners and clean up */
+    destroy() {
+      this.emitter.destroy();
+      window.removeEventListener("resize", this.onWindowResize);
+      this.element.removeEventListener("wheel", this.onWheel, listenerOptions);
+      this.element.removeEventListener("touchstart", this.onTouchStart, listenerOptions);
+      this.element.removeEventListener("touchmove", this.onTouchMove, listenerOptions);
+      this.element.removeEventListener("touchend", this.onTouchEnd, listenerOptions);
+    }
+    /**
+    * Event handler for 'touchstart' event
+    *
+    * @param event Touch event
+    */
+    onTouchStart = (event) => {
+      const { clientX, clientY } = event.targetTouches ? event.targetTouches[0] : event;
+      this.touchStart.x = clientX;
+      this.touchStart.y = clientY;
+      this.lastDelta = {
+        x: 0,
+        y: 0
+      };
+      this.emitter.emit("scroll", {
+        deltaX: 0,
+        deltaY: 0,
+        event
+      });
+    };
+    /** Event handler for 'touchmove' event */
+    onTouchMove = (event) => {
+      const { clientX, clientY } = event.targetTouches ? event.targetTouches[0] : event;
+      const deltaX = -(clientX - this.touchStart.x) * this.options.touchMultiplier;
+      const deltaY = -(clientY - this.touchStart.y) * this.options.touchMultiplier;
+      this.touchStart.x = clientX;
+      this.touchStart.y = clientY;
+      this.lastDelta = {
+        x: deltaX,
+        y: deltaY
+      };
+      this.emitter.emit("scroll", {
+        deltaX,
+        deltaY,
+        event
+      });
+    };
+    onTouchEnd = (event) => {
+      this.emitter.emit("scroll", {
+        deltaX: this.lastDelta.x,
+        deltaY: this.lastDelta.y,
+        event
+      });
+    };
+    /** Event handler for 'wheel' event */
+    onWheel = (event) => {
+      let { deltaX, deltaY, deltaMode } = event;
+      const multiplierX = getDeltaMultiplier(deltaMode, this.window.width);
+      const multiplierY = getDeltaMultiplier(deltaMode, this.window.height);
+      deltaX *= multiplierX;
+      deltaY *= multiplierY;
+      deltaX *= this.options.wheelMultiplier;
+      deltaY *= this.options.wheelMultiplier;
+      this.emitter.emit("scroll", {
+        deltaX,
+        deltaY,
+        event
+      });
+    };
+    onWindowResize = () => {
+      this.window = {
+        width: window.innerWidth,
+        height: window.innerHeight
+      };
+    };
+  };
+  var defaultEasing = (t) => Math.min(1, 1.001 - 2 ** (-10 * t));
+  var Lenis = class {
+    _isScrolling = false;
+    _isStopped = false;
+    _isLocked = false;
+    _preventNextNativeScrollEvent = false;
+    _resetVelocityTimeout = null;
+    _rafId = null;
+    _isDraggingSelection = false;
+    reducedMotionMediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    /**
+    * Whether or not the user is touching the screen
+    */
+    isTouching;
+    /**
+    * Whether or not the device is running iOS
+    */
+    isIos;
+    /**
+    * The time in ms since the lenis instance was created
+    */
+    time = 0;
+    /**
+    * User data that will be forwarded through the scroll event
+    *
+    * @example
+    * lenis.scrollTo(100, {
+    *   userData: {
+    *     foo: 'bar'
+    *   }
+    * })
+    */
+    userData = {};
+    /**
+    * The last velocity of the scroll
+    */
+    lastVelocity = 0;
+    /**
+    * The current velocity of the scroll
+    */
+    velocity = 0;
+    /**
+    * The direction of the scroll
+    */
+    direction = 0;
+    /**
+    * The options passed to the lenis instance
+    */
+    options;
+    /**
+    * The target scroll value
+    */
+    targetScroll;
+    /**
+    * The animated scroll value
+    */
+    animatedScroll;
+    animate = new Animate();
+    emitter = new Emitter();
+    dimensions;
+    virtualScroll;
+    constructor({ wrapper = window, content = document.documentElement, eventsTarget = wrapper, smoothWheel = true, syncTouch = false, syncTouchLerp = 0.075, touchInertiaExponent = 1.7, duration, easing, lerp: lerp2 = 0.1, infinite = false, orientation = "vertical", gestureOrientation = orientation === "horizontal" ? "both" : "vertical", touchMultiplier = 1, wheelMultiplier = 1, autoResize = true, prevent, virtualScroll, overscroll = true, autoRaf = false, anchors = false, autoToggle = false, allowNestedScroll = false, __experimental__naiveDimensions = false, naiveDimensions = __experimental__naiveDimensions, stopInertiaOnNavigate = false, respectReducedMotion = true } = {}) {
+      window.lenisVersion = version;
+      if (!window.lenis) window.lenis = {};
+      window.lenis.version = version;
+      if (orientation === "horizontal") window.lenis.horizontal = true;
+      if (syncTouch === true) window.lenis.touch = true;
+      this.isIos = /(iPad|iPhone|iPod)/g.test(navigator.userAgent);
+      if (!wrapper || wrapper === document.documentElement) wrapper = window;
+      if (typeof duration === "number" && typeof easing !== "function") easing = defaultEasing;
+      else if (typeof easing === "function" && typeof duration !== "number") duration = 1;
+      this.options = {
+        wrapper,
+        content,
+        eventsTarget,
+        smoothWheel,
+        syncTouch,
+        syncTouchLerp,
+        touchInertiaExponent,
+        duration,
+        easing,
+        lerp: lerp2,
+        infinite,
+        gestureOrientation,
+        orientation,
+        touchMultiplier,
+        wheelMultiplier,
+        autoResize,
+        prevent,
+        virtualScroll,
+        overscroll,
+        autoRaf,
+        anchors,
+        autoToggle,
+        allowNestedScroll,
+        naiveDimensions,
+        stopInertiaOnNavigate,
+        respectReducedMotion
+      };
+      this.dimensions = new Dimensions(wrapper, content, { autoResize });
+      this.updateClassName();
+      this.targetScroll = this.animatedScroll = this.actualScroll;
+      this.options.wrapper.addEventListener("scroll", this.onNativeScroll);
+      this.options.wrapper.addEventListener("scrollend", this.onScrollEnd, { capture: true });
+      if (this.options.anchors || this.options.stopInertiaOnNavigate) this.options.wrapper.addEventListener("click", this.onClick);
+      this.options.wrapper.addEventListener("pointerdown", this.onPointerDown);
+      this.virtualScroll = new VirtualScroll(eventsTarget, {
+        touchMultiplier,
+        wheelMultiplier
+      });
+      this.virtualScroll.on("scroll", this.onVirtualScroll);
+      if (this.options.autoToggle) {
+        this.checkOverflow();
+        this.rootElement.addEventListener("transitionend", this.onTransitionEnd);
+      }
+      if (this.options.autoRaf) this._rafId = requestAnimationFrame(this.raf);
+    }
+    /**
+    * Destroy the lenis instance, remove all event listeners and clean up the class name
+    */
+    destroy() {
+      this.emitter.destroy();
+      this.options.wrapper.removeEventListener("scroll", this.onNativeScroll);
+      this.options.wrapper.removeEventListener("scrollend", this.onScrollEnd, { capture: true });
+      this.options.wrapper.removeEventListener("pointerdown", this.onPointerDown);
+      if (this.options.anchors || this.options.stopInertiaOnNavigate) this.options.wrapper.removeEventListener("click", this.onClick);
+      this.virtualScroll.destroy();
+      this.dimensions.destroy();
+      this.cleanUpClassName();
+      if (this._rafId) cancelAnimationFrame(this._rafId);
+    }
+    on(event, callback) {
+      return this.emitter.on(event, callback);
+    }
+    off(event, callback) {
+      return this.emitter.off(event, callback);
+    }
+    onScrollEnd = (e) => {
+      if (!(e instanceof CustomEvent)) {
+        if (this.isScrolling === "smooth" || this.isScrolling === false) e.stopPropagation();
+      }
+    };
+    dispatchScrollendEvent = () => {
+      this.options.wrapper.dispatchEvent(new CustomEvent("scrollend", {
+        bubbles: this.options.wrapper === window,
+        detail: { lenisScrollEnd: true }
+      }));
+    };
+    get overflow() {
+      const property = this.isHorizontal ? "overflow-x" : "overflow-y";
+      return getComputedStyle(this.rootElement)[property];
+    }
+    checkOverflow() {
+      if (["hidden", "clip"].includes(this.overflow)) this.internalStop();
+      else this.internalStart();
+    }
+    onTransitionEnd = (event) => {
+      if (event.propertyName?.includes("overflow") && event.target === this.rootElement) this.checkOverflow();
+    };
+    setScroll(scroll) {
+      if (this.isHorizontal) this.options.wrapper.scrollTo({
+        left: scroll,
+        behavior: "instant"
+      });
+      else this.options.wrapper.scrollTo({
+        top: scroll,
+        behavior: "instant"
+      });
+    }
+    onClick = (event) => {
+      const linkElementsUrls = event.composedPath().filter((node) => node instanceof HTMLAnchorElement && node.href).map((element) => new URL(element.href));
+      const currentUrl = new URL(window.location.href);
+      if (this.options.anchors) {
+        const anchorElementUrl = linkElementsUrls.find((targetUrl) => currentUrl.host === targetUrl.host && currentUrl.pathname === targetUrl.pathname && targetUrl.hash);
+        if (anchorElementUrl) {
+          const options = typeof this.options.anchors === "object" && this.options.anchors ? this.options.anchors : void 0;
+          const target = decodeURIComponent(anchorElementUrl.hash);
+          this.scrollTo(target, options);
+          return;
+        }
+      }
+      if (this.options.stopInertiaOnNavigate) {
+        if (linkElementsUrls.some((targetUrl) => currentUrl.host === targetUrl.host && currentUrl.pathname !== targetUrl.pathname)) {
+          this.reset();
+          return;
+        }
+      }
+    };
+    onPointerDown = (event) => {
+      if (event.button === 1) this.reset();
+    };
+    isTouchOnSelectionHandle(event) {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+      const touch = event.targetTouches[0] ?? event.changedTouches[0];
+      if (!touch) return false;
+      const rects = selection.getRangeAt(0).getClientRects();
+      if (rects.length === 0) return false;
+      const first = rects[0];
+      const last = rects[rects.length - 1];
+      const HANDLE_RADIUS = 40;
+      const nearStart = Math.hypot(touch.clientX - first.left, touch.clientY - first.top) <= HANDLE_RADIUS;
+      const nearEnd = Math.hypot(touch.clientX - last.right, touch.clientY - last.bottom) <= HANDLE_RADIUS;
+      return nearStart || nearEnd;
+    }
+    onVirtualScroll = (data) => {
+      if (typeof this.options.virtualScroll === "function" && this.options.virtualScroll(data) === false) return;
+      const { deltaX, deltaY, event } = data;
+      this.emitter.emit("virtual-scroll", {
+        deltaX,
+        deltaY,
+        event
+      });
+      if (event.ctrlKey) return;
+      if (event.lenisStopPropagation) return;
+      const isTouch = event.type.includes("touch");
+      const isWheel = event.type.includes("wheel");
+      if (isTouch && this.isIos) {
+        if (event.type === "touchstart") this._isDraggingSelection = this.isTouchOnSelectionHandle(event);
+        if (this._isDraggingSelection) {
+          if (event.type === "touchend") this._isDraggingSelection = false;
+          return;
+        }
+      }
+      this.isTouching = event.type === "touchstart" || event.type === "touchmove";
+      const isClickOrTap = deltaX === 0 && deltaY === 0;
+      if (this.options.syncTouch && isTouch && event.type === "touchstart" && isClickOrTap && !this.isStopped && !this.isLocked) {
+        this.reset();
+        return;
+      }
+      const isUnknownGesture = this.options.gestureOrientation === "vertical" && deltaY === 0 || this.options.gestureOrientation === "horizontal" && deltaX === 0;
+      if (isClickOrTap || isUnknownGesture) return;
+      let composedPath = event.composedPath();
+      composedPath = composedPath.slice(0, composedPath.indexOf(this.rootElement));
+      const prevent = this.options.prevent;
+      const gestureOrientation = Math.abs(deltaX) >= Math.abs(deltaY) ? "horizontal" : "vertical";
+      if (composedPath.find((node) => node instanceof HTMLElement && (typeof prevent === "function" && prevent?.(node) || node.hasAttribute?.("data-lenis-prevent") || gestureOrientation === "vertical" && node.hasAttribute?.("data-lenis-prevent-vertical") || gestureOrientation === "horizontal" && node.hasAttribute?.("data-lenis-prevent-horizontal") || isTouch && node.hasAttribute?.("data-lenis-prevent-touch") || isWheel && node.hasAttribute?.("data-lenis-prevent-wheel") || this.options.allowNestedScroll && this.hasNestedScroll(node, {
+        deltaX,
+        deltaY
+      })))) return;
+      if (this.isStopped || this.isLocked) {
+        if (event.cancelable) event.preventDefault();
+        return;
+      }
+      if (!(this.options.syncTouch && isTouch || this.options.smoothWheel && isWheel)) {
+        this.isScrolling = "native";
+        this.animate.stop();
+        event.lenisStopPropagation = true;
+        return;
+      }
+      let delta = deltaY;
+      if (this.options.gestureOrientation === "both") delta = Math.abs(deltaY) > Math.abs(deltaX) ? deltaY : deltaX;
+      else if (this.options.gestureOrientation === "horizontal") delta = deltaX;
+      if (!this.options.overscroll || this.options.infinite || this.options.wrapper !== window && this.limit > 0 && (this.animatedScroll > 0 && this.animatedScroll < this.limit || this.animatedScroll === 0 && deltaY > 0 || this.animatedScroll === this.limit && deltaY < 0)) event.lenisStopPropagation = true;
+      if (event.cancelable) event.preventDefault();
+      const isSyncTouch = isTouch && this.options.syncTouch;
+      const hasTouchInertia = isTouch && event.type === "touchend";
+      if (hasTouchInertia) delta = Math.sign(delta) * Math.abs(this.velocity) ** this.options.touchInertiaExponent;
+      this.scrollTo(this.targetScroll + delta, {
+        programmatic: false,
+        ...isSyncTouch ? { lerp: hasTouchInertia ? this.options.syncTouchLerp : 1 } : {
+          lerp: this.options.lerp,
+          duration: this.options.duration,
+          easing: this.options.easing
+        }
+      });
+    };
+    /**
+    * Force lenis to recalculate the dimensions
+    */
+    resize() {
+      this.dimensions.resize();
+      this.animatedScroll = this.targetScroll = this.actualScroll;
+      this.emit();
+    }
+    emit() {
+      this.emitter.emit("scroll", this);
+    }
+    onNativeScroll = () => {
+      if (this._resetVelocityTimeout !== null) {
+        clearTimeout(this._resetVelocityTimeout);
+        this._resetVelocityTimeout = null;
+      }
+      if (this._preventNextNativeScrollEvent) {
+        this._preventNextNativeScrollEvent = false;
+        return;
+      }
+      if (this.isScrolling === false || this.isScrolling === "native") {
+        const lastScroll = this.animatedScroll;
+        this.animatedScroll = this.targetScroll = this.actualScroll;
+        this.lastVelocity = this.velocity;
+        this.velocity = this.animatedScroll - lastScroll;
+        this.direction = Math.sign(this.animatedScroll - lastScroll);
+        if (!this.isStopped) this.isScrolling = "native";
+        this.emit();
+        if (this.velocity !== 0) this._resetVelocityTimeout = setTimeout(() => {
+          this.lastVelocity = this.velocity;
+          this.velocity = 0;
+          this.isScrolling = false;
+          this.emit();
+        }, 400);
+      }
+    };
+    reset() {
+      this.isLocked = false;
+      this.isScrolling = false;
+      this.animatedScroll = this.targetScroll = this.actualScroll;
+      this.lastVelocity = this.velocity = 0;
+      this.animate.stop();
+    }
+    /**
+    * Start lenis scroll after it has been stopped
+    */
+    start() {
+      if (!this.isStopped) return;
+      if (this.options.autoToggle) {
+        this.rootElement.style.removeProperty("overflow");
+        return;
+      }
+      this.internalStart();
+    }
+    internalStart() {
+      if (!this.isStopped) return;
+      this.reset();
+      this.isStopped = false;
+      this.emit();
+    }
+    /**
+    * Stop lenis scroll
+    */
+    stop() {
+      if (this.isStopped) return;
+      if (this.options.autoToggle) {
+        this.rootElement.style.setProperty("overflow", "clip");
+        return;
+      }
+      this.internalStop();
+    }
+    internalStop() {
+      if (this.isStopped) return;
+      this.reset();
+      this.isStopped = true;
+      this.emit();
+    }
+    /**
+    * RequestAnimationFrame for lenis
+    *
+    * @param time The time in ms from an external clock like `requestAnimationFrame` or Tempus
+    */
+    raf = (time) => {
+      const deltaTime = time - (this.time || time);
+      this.time = time;
+      this.animate.advance(deltaTime * 1e-3);
+      if (this.options.autoRaf) this._rafId = requestAnimationFrame(this.raf);
+    };
+    /**
+    * Scroll to a target value
+    *
+    * @param target The target value to scroll to
+    * @param options The options for the scroll
+    *
+    * @example
+    * lenis.scrollTo(100, {
+    *   offset: 100,
+    *   duration: 1,
+    *   easing: (t) => 1 - Math.cos((t * Math.PI) / 2),
+    *   lerp: 0.1,
+    *   onStart: () => {
+    *     console.log('onStart')
+    *   },
+    *   onComplete: () => {
+    *     console.log('onComplete')
+    *   },
+    * })
+    */
+    scrollTo(_target, { offset = 0, immediate = false, lock = false, programmatic = true, lerp: lerp2 = programmatic ? this.options.lerp : void 0, duration = programmatic ? this.options.duration : void 0, easing = programmatic ? this.options.easing : void 0, onStart, onComplete, force = false, userData } = {}) {
+      if (this.prefersReducedMotion) if (programmatic) immediate = true;
+      else {
+        lerp2 = 1;
+        duration = void 0;
+        easing = void 0;
+      }
+      if ((this.isStopped || this.isLocked) && !force) return;
+      let target = _target;
+      let adjustedOffset = offset;
+      if (typeof target === "string" && [
+        "top",
+        "left",
+        "start",
+        "#"
+      ].includes(target)) target = 0;
+      else if (typeof target === "string" && [
+        "bottom",
+        "right",
+        "end"
+      ].includes(target)) target = this.limit;
+      else {
+        let node = null;
+        if (typeof target === "string") {
+          node = target.startsWith("#") ? document.getElementById(target.slice(1)) : document.querySelector(target);
+          if (!node) if (target === "#top") target = 0;
+          else console.warn("Lenis: Target not found", target);
+        } else if (target instanceof HTMLElement && target?.nodeType) node = target;
+        if (node) {
+          if (this.options.wrapper !== window) {
+            const wrapperRect = this.rootElement.getBoundingClientRect();
+            adjustedOffset -= this.isHorizontal ? wrapperRect.left : wrapperRect.top;
+          }
+          const rect = node.getBoundingClientRect();
+          const targetStyle = getComputedStyle(node);
+          const scrollMargin = this.isHorizontal ? Number.parseFloat(targetStyle.scrollMarginLeft) : Number.parseFloat(targetStyle.scrollMarginTop);
+          const containerStyle = getComputedStyle(this.rootElement);
+          const scrollPadding = this.isHorizontal ? Number.parseFloat(containerStyle.scrollPaddingLeft) : Number.parseFloat(containerStyle.scrollPaddingTop);
+          target = (this.isHorizontal ? rect.left : rect.top) + this.animatedScroll - (Number.isNaN(scrollMargin) ? 0 : scrollMargin) - (Number.isNaN(scrollPadding) ? 0 : scrollPadding);
+        }
+      }
+      if (typeof target !== "number") return;
+      target += adjustedOffset;
+      if (this.options.infinite) {
+        if (programmatic) {
+          this.targetScroll = this.animatedScroll = this.scroll;
+          const distance = target - this.animatedScroll;
+          if (distance > this.limit / 2) target -= this.limit;
+          else if (distance < -this.limit / 2) target += this.limit;
+        }
+      } else target = clamp(0, target, this.limit);
+      if (target === this.targetScroll) {
+        onStart?.(this);
+        onComplete?.(this);
+        return;
+      }
+      this.userData = userData ?? {};
+      if (immediate) {
+        this.animatedScroll = this.targetScroll = target;
+        this.setScroll(this.scroll);
+        this.reset();
+        this.preventNextNativeScrollEvent();
+        this.emit();
+        onComplete?.(this);
+        this.userData = {};
+        requestAnimationFrame(() => {
+          this.dispatchScrollendEvent();
+        });
+        return;
+      }
+      if (!programmatic) this.targetScroll = target;
+      if (typeof duration === "number" && typeof easing !== "function") easing = defaultEasing;
+      else if (typeof easing === "function" && typeof duration !== "number") duration = 1;
+      this.animate.fromTo(this.animatedScroll, target, {
+        duration,
+        easing,
+        lerp: lerp2,
+        onStart: () => {
+          if (lock) this.isLocked = true;
+          this.isScrolling = "smooth";
+          onStart?.(this);
+        },
+        onUpdate: (value, completed) => {
+          this.isScrolling = "smooth";
+          this.lastVelocity = this.velocity;
+          this.velocity = value - this.animatedScroll;
+          this.direction = Math.sign(this.velocity);
+          this.animatedScroll = value;
+          this.setScroll(this.scroll);
+          if (programmatic) this.targetScroll = value;
+          if (!completed) this.emit();
+          if (completed) {
+            this.reset();
+            this.emit();
+            onComplete?.(this);
+            this.userData = {};
+            requestAnimationFrame(() => {
+              this.dispatchScrollendEvent();
+            });
+            this.preventNextNativeScrollEvent();
+          }
+        }
+      });
+    }
+    preventNextNativeScrollEvent() {
+      this._preventNextNativeScrollEvent = true;
+      requestAnimationFrame(() => {
+        this._preventNextNativeScrollEvent = false;
+      });
+    }
+    hasNestedScroll(node, { deltaX, deltaY }) {
+      const time = Date.now();
+      if (!node._lenis) node._lenis = {};
+      const cache = node._lenis;
+      let hasOverflowX;
+      let hasOverflowY;
+      let isScrollableX;
+      let isScrollableY;
+      let hasOverscrollBehaviorX;
+      let hasOverscrollBehaviorY;
+      let scrollWidth;
+      let scrollHeight;
+      let clientWidth;
+      let clientHeight;
+      if (time - (cache.time ?? 0) > 2e3) {
+        cache.time = Date.now();
+        const computedStyle = window.getComputedStyle(node);
+        cache.computedStyle = computedStyle;
+        hasOverflowX = [
+          "auto",
+          "overlay",
+          "scroll"
+        ].includes(computedStyle.overflowX);
+        hasOverflowY = [
+          "auto",
+          "overlay",
+          "scroll"
+        ].includes(computedStyle.overflowY);
+        hasOverscrollBehaviorX = ["auto"].includes(computedStyle.overscrollBehaviorX);
+        hasOverscrollBehaviorY = ["auto"].includes(computedStyle.overscrollBehaviorY);
+        cache.hasOverflowX = hasOverflowX;
+        cache.hasOverflowY = hasOverflowY;
+        if (!(hasOverflowX || hasOverflowY)) return false;
+        scrollWidth = node.scrollWidth;
+        scrollHeight = node.scrollHeight;
+        clientWidth = node.clientWidth;
+        clientHeight = node.clientHeight;
+        isScrollableX = scrollWidth > clientWidth;
+        isScrollableY = scrollHeight > clientHeight;
+        cache.isScrollableX = isScrollableX;
+        cache.isScrollableY = isScrollableY;
+        cache.scrollWidth = scrollWidth;
+        cache.scrollHeight = scrollHeight;
+        cache.clientWidth = clientWidth;
+        cache.clientHeight = clientHeight;
+        cache.hasOverscrollBehaviorX = hasOverscrollBehaviorX;
+        cache.hasOverscrollBehaviorY = hasOverscrollBehaviorY;
+      } else {
+        isScrollableX = cache.isScrollableX;
+        isScrollableY = cache.isScrollableY;
+        hasOverflowX = cache.hasOverflowX;
+        hasOverflowY = cache.hasOverflowY;
+        scrollWidth = cache.scrollWidth;
+        scrollHeight = cache.scrollHeight;
+        clientWidth = cache.clientWidth;
+        clientHeight = cache.clientHeight;
+        hasOverscrollBehaviorX = cache.hasOverscrollBehaviorX;
+        hasOverscrollBehaviorY = cache.hasOverscrollBehaviorY;
+      }
+      if (!(hasOverflowX && isScrollableX || hasOverflowY && isScrollableY)) return false;
+      const orientation = Math.abs(deltaX) >= Math.abs(deltaY) ? "horizontal" : "vertical";
+      let scroll;
+      let maxScroll;
+      let delta;
+      let hasOverflow;
+      let isScrollable;
+      let hasOverscrollBehavior;
+      if (orientation === "horizontal") {
+        scroll = Math.round(node.scrollLeft);
+        maxScroll = scrollWidth - clientWidth;
+        delta = deltaX;
+        hasOverflow = hasOverflowX;
+        isScrollable = isScrollableX;
+        hasOverscrollBehavior = hasOverscrollBehaviorX;
+      } else if (orientation === "vertical") {
+        scroll = Math.round(node.scrollTop);
+        maxScroll = scrollHeight - clientHeight;
+        delta = deltaY;
+        hasOverflow = hasOverflowY;
+        isScrollable = isScrollableY;
+        hasOverscrollBehavior = hasOverscrollBehaviorY;
+      } else return false;
+      if (!hasOverscrollBehavior && (scroll >= maxScroll || scroll <= 0)) return true;
+      return (delta > 0 ? scroll < maxScroll : scroll > 0) && hasOverflow && isScrollable;
+    }
+    /**
+    * The root element on which lenis is instanced
+    */
+    get rootElement() {
+      return this.options.wrapper === window ? document.documentElement : this.options.wrapper;
+    }
+    /**
+    * The limit which is the maximum scroll value
+    */
+    get limit() {
+      if (this.options.naiveDimensions) {
+        if (this.isHorizontal) return this.rootElement.scrollWidth - this.rootElement.clientWidth;
+        return this.rootElement.scrollHeight - this.rootElement.clientHeight;
+      }
+      return this.dimensions.limit[this.isHorizontal ? "x" : "y"];
+    }
+    /**
+    * Whether or not the scroll is horizontal
+    */
+    get isHorizontal() {
+      return this.options.orientation === "horizontal";
+    }
+    /**
+    * The actual scroll value
+    */
+    get actualScroll() {
+      const wrapper = this.options.wrapper;
+      return this.isHorizontal ? wrapper.scrollX ?? wrapper.scrollLeft : wrapper.scrollY ?? wrapper.scrollTop;
+    }
+    /**
+    * The current scroll value
+    */
+    get scroll() {
+      return this.options.infinite ? modulo(this.animatedScroll, this.limit) : this.animatedScroll;
+    }
+    /**
+    * The progress of the scroll relative to the limit
+    */
+    get progress() {
+      return this.limit === 0 ? 1 : this.scroll / this.limit;
+    }
+    /**
+    * Current scroll state
+    */
+    get isScrolling() {
+      return this._isScrolling;
+    }
+    set isScrolling(value) {
+      if (this._isScrolling !== value) {
+        this._isScrolling = value;
+        this.updateClassName();
+      }
+    }
+    /**
+    * Check if lenis is stopped
+    */
+    get isStopped() {
+      return this._isStopped;
+    }
+    set isStopped(value) {
+      if (this._isStopped !== value) {
+        this._isStopped = value;
+        this.updateClassName();
+      }
+    }
+    /**
+    * Check if lenis is locked
+    */
+    get isLocked() {
+      return this._isLocked;
+    }
+    set isLocked(value) {
+      if (this._isLocked !== value) {
+        this._isLocked = value;
+        this.updateClassName();
+      }
+    }
+    /**
+    * Check if lenis is smooth scrolling
+    */
+    get isSmooth() {
+      return this.isScrolling === "smooth";
+    }
+    /**
+    * Whether the user prefers reduced motion and lenis is honoring it (see `respectReducedMotion` option)
+    */
+    get prefersReducedMotion() {
+      return this.options.respectReducedMotion && this.reducedMotionMediaQuery.matches;
+    }
+    /**
+    * The class name applied to the wrapper element
+    */
+    get className() {
+      let className = "lenis";
+      if (this.options.autoToggle) className += " lenis-autoToggle";
+      if (this.isStopped) className += " lenis-stopped";
+      if (this.isLocked) className += " lenis-locked";
+      if (this.isScrolling) className += " lenis-scrolling";
+      if (this.isScrolling === "smooth") className += " lenis-smooth";
+      return className;
+    }
+    updateClassName() {
+      this.cleanUpClassName();
+      this.className.split(" ").forEach((className) => {
+        this.rootElement.classList.add(className);
+      });
+    }
+    cleanUpClassName() {
+      for (const className of Array.from(this.rootElement.classList)) if (className === "lenis" || className.startsWith("lenis-")) this.rootElement.classList.remove(className);
+    }
+  };
+
+  // node_modules/lenis/dist/lenis-snap.mjs
+  function debounce2(callback, delay) {
+    let timer;
+    return function(...args) {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = void 0;
+        callback.apply(this, args);
+      }, delay);
+    };
+  }
+  function removeParentSticky(element) {
+    if (getComputedStyle(element).position === "sticky") {
+      element.style.setProperty("position", "static");
+      element.dataset.sticky = "true";
+    }
+    if (element.offsetParent) removeParentSticky(element.offsetParent);
+  }
+  function addParentSticky(element) {
+    if (element?.dataset?.sticky === "true") {
+      element.style.removeProperty("position");
+      delete element.dataset.sticky;
+    }
+    if (element.offsetParent) addParentSticky(element.offsetParent);
+  }
+  function offsetTop(element, accumulator = 0) {
+    const top = accumulator + element.offsetTop;
+    if (element.offsetParent) return offsetTop(element.offsetParent, top);
+    return top;
+  }
+  function offsetLeft(element, accumulator = 0) {
+    const left = accumulator + element.offsetLeft;
+    if (element.offsetParent) return offsetLeft(element.offsetParent, left);
+    return left;
+  }
+  function scrollTop(element, accumulator = 0) {
+    const top = accumulator + element.scrollTop;
+    if (element.offsetParent) return scrollTop(element.offsetParent, top);
+    return top + window.scrollY;
+  }
+  function scrollLeft(element, accumulator = 0) {
+    const left = accumulator + element.scrollLeft;
+    if (element.offsetParent) return scrollLeft(element.offsetParent, left);
+    return left + window.scrollX;
+  }
+  var SnapElement = class {
+    element;
+    options;
+    align;
+    rect = {};
+    wrapperResizeObserver;
+    resizeObserver;
+    debouncedWrapperResize;
+    constructor(element, { align = ["start"], ignoreSticky = true, ignoreTransform = false } = {}) {
+      this.element = element;
+      this.options = {
+        align,
+        ignoreSticky,
+        ignoreTransform
+      };
+      this.align = [align].flat();
+      this.debouncedWrapperResize = debounce2(this.onWrapperResize, 500);
+      this.wrapperResizeObserver = new ResizeObserver(this.debouncedWrapperResize);
+      this.wrapperResizeObserver.observe(document.body);
+      this.onWrapperResize();
+      this.resizeObserver = new ResizeObserver(this.onResize);
+      this.resizeObserver.observe(this.element);
+      this.setRect({
+        width: this.element.offsetWidth,
+        height: this.element.offsetHeight
+      });
+    }
+    destroy() {
+      this.wrapperResizeObserver.disconnect();
+      this.resizeObserver.disconnect();
+    }
+    setRect({ top, left, width, height, element } = {}) {
+      top = top ?? this.rect.top;
+      left = left ?? this.rect.left;
+      width = width ?? this.rect.width;
+      height = height ?? this.rect.height;
+      element = element ?? this.rect.element;
+      if (top === this.rect.top && left === this.rect.left && width === this.rect.width && height === this.rect.height && element === this.rect.element) return;
+      this.rect.top = top;
+      this.rect.y = top;
+      this.rect.width = width;
+      this.rect.height = height;
+      this.rect.left = left;
+      this.rect.x = left;
+      this.rect.bottom = top + height;
+      this.rect.right = left + width;
+    }
+    onWrapperResize = () => {
+      let top;
+      let left;
+      if (this.options.ignoreSticky) removeParentSticky(this.element);
+      if (this.options.ignoreTransform) {
+        top = offsetTop(this.element);
+        left = offsetLeft(this.element);
+      } else {
+        const rect = this.element.getBoundingClientRect();
+        top = rect.top + scrollTop(this.element);
+        left = rect.left + scrollLeft(this.element);
+      }
+      if (this.options.ignoreSticky) addParentSticky(this.element);
+      this.setRect({
+        top,
+        left
+      });
+    };
+    onResize = ([entry]) => {
+      if (!entry?.borderBoxSize[0]) return;
+      const width = entry.borderBoxSize[0].inlineSize;
+      const height = entry.borderBoxSize[0].blockSize;
+      this.setRect({
+        width,
+        height
+      });
+    };
+  };
+  var index = 0;
+  function uid() {
+    return index++;
+  }
+  var Snap = class {
+    options;
+    elements = /* @__PURE__ */ new Map();
+    snaps = /* @__PURE__ */ new Map();
+    viewport = {
+      width: window.innerWidth,
+      height: window.innerHeight
+    };
+    isStopped = false;
+    onSnapDebounced;
+    currentSnapIndex;
+    constructor(lenis2, { type = "proximity", lerp: lerp2, easing, duration, distanceThreshold = "50%", debounce: debounceDelay = 500, onSnapStart, onSnapComplete } = {}) {
+      this.lenis = lenis2;
+      if (!window.lenis) window.lenis = {};
+      window.lenis.snap = true;
+      this.options = {
+        type,
+        lerp: lerp2,
+        easing,
+        duration,
+        distanceThreshold,
+        debounce: debounceDelay,
+        onSnapStart,
+        onSnapComplete
+      };
+      this.onWindowResize();
+      window.addEventListener("resize", this.onWindowResize);
+      this.onSnapDebounced = debounce2(this.onSnap, this.options.debounce);
+      this.lenis.on("virtual-scroll", this.onSnapDebounced);
+    }
+    /**
+    * Destroy the snap instance
+    */
+    destroy() {
+      this.lenis.off("virtual-scroll", this.onSnapDebounced);
+      window.removeEventListener("resize", this.onWindowResize);
+      this.elements.forEach((element) => {
+        element.destroy();
+      });
+    }
+    /**
+    * Start the snap after it has been stopped
+    */
+    start() {
+      this.isStopped = false;
+    }
+    /**
+    * Stop the snap
+    */
+    stop() {
+      this.isStopped = true;
+    }
+    /**
+    * Add a snap to the snap instance
+    *
+    * @param value The value to snap to
+    * @param userData User data that will be forwarded through the snap event
+    * @returns Unsubscribe function
+    */
+    add(value) {
+      const id = uid();
+      this.snaps.set(id, { value });
+      return () => this.snaps.delete(id);
+    }
+    /**
+    * Add an element to the snap instance
+    *
+    * @param element The element to add
+    * @param options The options for the element
+    * @returns Unsubscribe function
+    */
+    addElement(element, options = {}) {
+      const id = uid();
+      this.elements.set(id, new SnapElement(element, options));
+      return () => this.elements.delete(id);
+    }
+    addElements(elements, options = {}) {
+      const map = [...elements].map((element) => this.addElement(element, options));
+      return () => {
+        map.forEach((remove) => {
+          remove();
+        });
+      };
+    }
+    onWindowResize = () => {
+      this.viewport.width = window.innerWidth;
+      this.viewport.height = window.innerHeight;
+    };
+    computeSnaps = () => {
+      const { isHorizontal } = this.lenis;
+      let snaps = [...this.snaps.values()];
+      this.elements.forEach(({ rect, align }) => {
+        let value;
+        align.forEach((align2) => {
+          if (align2 === "start") value = rect.top;
+          else if (align2 === "center") value = isHorizontal ? rect.left + rect.width / 2 - this.viewport.width / 2 : rect.top + rect.height / 2 - this.viewport.height / 2;
+          else if (align2 === "end") value = isHorizontal ? rect.left + rect.width - this.viewport.width : rect.top + rect.height - this.viewport.height;
+          if (typeof value === "number") snaps.push({ value: Math.ceil(value) });
+        });
+      });
+      snaps = snaps.sort((a, b) => Math.abs(a.value) - Math.abs(b.value));
+      return snaps;
+    };
+    previous() {
+      this.goTo((this.currentSnapIndex ?? 0) - 1);
+    }
+    next() {
+      this.goTo((this.currentSnapIndex ?? 0) + 1);
+    }
+    goTo(index2) {
+      const snaps = this.computeSnaps();
+      if (snaps.length === 0) return;
+      this.currentSnapIndex = Math.max(0, Math.min(index2, snaps.length - 1));
+      const currentSnap = snaps[this.currentSnapIndex];
+      if (currentSnap === void 0) return;
+      this.lenis.scrollTo(currentSnap.value, {
+        duration: this.options.duration,
+        easing: this.options.easing,
+        lerp: this.options.lerp,
+        lock: this.options.type === "lock",
+        userData: { initiator: "snap" },
+        onStart: () => {
+          this.options.onSnapStart?.({
+            index: this.currentSnapIndex,
+            ...currentSnap
+          });
+        },
+        onComplete: () => {
+          this.options.onSnapComplete?.({
+            index: this.currentSnapIndex,
+            ...currentSnap
+          });
+        }
+      });
+    }
+    get distanceThreshold() {
+      let distanceThreshold = Number.POSITIVE_INFINITY;
+      if (this.options.type === "mandatory") return Number.POSITIVE_INFINITY;
+      const { isHorizontal } = this.lenis;
+      const axis = isHorizontal ? "width" : "height";
+      if (typeof this.options.distanceThreshold === "string" && this.options.distanceThreshold.endsWith("%")) distanceThreshold = Number(this.options.distanceThreshold.replace("%", "")) / 100 * this.viewport[axis];
+      else if (typeof this.options.distanceThreshold === "number") distanceThreshold = this.options.distanceThreshold;
+      else distanceThreshold = this.viewport[axis];
+      return distanceThreshold;
+    }
+    onSnap = (e) => {
+      if (this.isStopped) return;
+      if (e.event.type === "touchmove") return;
+      if (this.options.type === "lock" && this.lenis.userData?.initiator === "snap") return;
+      let { scroll, isHorizontal } = this.lenis;
+      const delta = isHorizontal ? e.deltaX : e.deltaY;
+      scroll = Math.ceil(this.lenis.scroll + delta);
+      const snaps = this.computeSnaps();
+      if (snaps.length === 0) return;
+      let snapIndex;
+      const prevSnapIndex = snaps.findLastIndex(({ value }) => value < scroll);
+      const nextSnapIndex = snaps.findIndex(({ value }) => value > scroll);
+      if (this.options.type === "lock") {
+        if (delta > 0) snapIndex = nextSnapIndex;
+        else if (delta < 0) snapIndex = prevSnapIndex;
+      } else {
+        const prevSnap = snaps[prevSnapIndex];
+        const distanceToPrevSnap = prevSnap ? Math.abs(scroll - prevSnap.value) : Number.POSITIVE_INFINITY;
+        const nextSnap = snaps[nextSnapIndex];
+        snapIndex = distanceToPrevSnap < (nextSnap ? Math.abs(scroll - nextSnap.value) : Number.POSITIVE_INFINITY) ? prevSnapIndex : nextSnapIndex;
+      }
+      if (snapIndex === void 0) return;
+      if (snapIndex === -1) return;
+      snapIndex = Math.max(0, Math.min(snapIndex, snaps.length - 1));
+      const snap2 = snaps[snapIndex];
+      if (Math.abs(scroll - snap2.value) <= this.distanceThreshold) this.goTo(snapIndex);
+    };
+    resize() {
+      this.elements.forEach((element) => {
+        element.onWrapperResize();
+      });
+    }
+  };
+
   // assets/js/telar-story/panels.js
+  var PANEL_TYPES = ["layer1", "layer2", "glossary"];
   function initializePanels() {
-    document.querySelectorAll('[data-panel="layer1"]').forEach((trigger) => {
-      trigger.addEventListener("click", function() {
-        const stepNumber = this.dataset.step;
+    document.addEventListener("click", function(e) {
+      const trigger = e.target.closest('[data-panel="layer1"]');
+      if (trigger) {
+        const stepNumber = trigger.dataset.step;
+        document.querySelectorAll(".offcanvas.show").forEach((p) => {
+          const inst = bootstrap.Offcanvas.getInstance(p);
+          if (inst) inst.hide();
+        });
         state.panelStack = [];
         openPanel("layer1", stepNumber);
-      });
+      }
     });
     document.addEventListener("click", function(e) {
       if (e.target.matches('[data-panel="layer2"]')) {
@@ -486,6 +5509,96 @@
         closePanel("glossary");
       });
     }
+    const glossaryPanel = document.getElementById("panel-glossary");
+    if (glossaryPanel) {
+      glossaryPanel.addEventListener("show.bs.offcanvas", joinGlossaryToStack);
+    }
+    PANEL_TYPES.forEach((panelType) => {
+      const panel = document.getElementById(`panel-${panelType}`);
+      if (!panel) return;
+      panel.addEventListener("hidden.bs.offcanvas", function() {
+        const before = state.panelStack.length;
+        state.panelStack = state.panelStack.filter((p) => p.type !== panelType);
+        if (state.panelStack.length !== before) {
+          writeHash();
+        }
+        if (!anyPanelOpen()) {
+          state.isPanelOpen = false;
+          deactivateScrollLock();
+        }
+        if (panelType === "glossary" && !panel.classList.contains("show")) {
+          panel.removeAttribute("data-deep-link-n");
+        }
+        settleFocusTraps();
+      });
+      panel.addEventListener("shown.bs.offcanvas", settleFocusTraps);
+    });
+    initializeShareHandoff();
+  }
+  function focusTrap(el, Component) {
+    const instance = el && Component.getInstance(el);
+    const trap = instance?._focustrap;
+    if (!trap) return null;
+    return {
+      isHeld: () => trap._isActive,
+      hold: () => {
+        trap.deactivate();
+        trap.activate();
+      },
+      release: () => {
+        const held = trap._isActive;
+        trap.deactivate();
+        return held;
+      }
+    };
+  }
+  var shareOpen = false;
+  var isSettledOpen = (el) => el.classList.contains("show") && !el.classList.contains("hiding");
+  function topmostOpenPanel() {
+    const els = state.panelStack.map((p) => document.getElementById(`panel-${p.type}`));
+    const fromStack = els.reverse().find((el) => el && isSettledOpen(el));
+    if (fromStack) return fromStack;
+    const open = PANEL_TYPES.map((t) => document.getElementById(`panel-${t}`)).filter((el) => el && isSettledOpen(el));
+    return open[open.length - 1] || null;
+  }
+  function releasePanelTraps(except = null) {
+    return PANEL_TYPES.map((t) => document.getElementById(`panel-${t}`)).filter((el) => el && el !== except).map((el) => focusTrap(el, bootstrap.Offcanvas)?.release()).some(Boolean);
+  }
+  function settleFocusTraps() {
+    if (shareOpen) {
+      const share = document.getElementById("panel-share");
+      const shareTrap = focusTrap(share, bootstrap.Modal);
+      const shareHeld = shareTrap?.isHeld();
+      if (releasePanelTraps() && shareHeld) shareTrap.hold();
+      return;
+    }
+    const top = topmostOpenPanel();
+    releasePanelTraps(top);
+    if (top) focusTrap(top, bootstrap.Offcanvas)?.hold();
+  }
+  function initializeShareHandoff() {
+    const share = document.getElementById("panel-share");
+    if (!share) return;
+    share.addEventListener("show.bs.modal", () => {
+      shareOpen = true;
+      releasePanelTraps();
+    });
+    share.addEventListener("hidden.bs.modal", () => {
+      shareOpen = false;
+      settleFocusTraps();
+      setTimeout(() => topmostOpenPanel()?.focus(), 0);
+    });
+  }
+  function anyPanelOpen() {
+    return state.panelStack.length > 0 || PANEL_TYPES.some((t) => document.getElementById(`panel-${t}`)?.classList.contains("show"));
+  }
+  function joinGlossaryToStack() {
+    const top = state.panelStack[state.panelStack.length - 1];
+    if (top?.type !== "glossary") {
+      state.panelStack.push({ type: "glossary", id: null });
+    }
+    state.isPanelOpen = true;
+    activateScrollLock();
   }
   function openPanel(panelType, contentId) {
     const panelId = `panel-${panelType}`;
@@ -494,14 +5607,26 @@
     const content = getPanelContent(panelType, contentId);
     if (content) {
       const titleElement = document.getElementById(`${panelId}-title`);
-      const demoBadgeText = window.telarLang?.demoPanelBadge || "Demo content";
-      const demoBadge = content.demo ? `<span class="demo-badge-inline" style="margin-left: 0.5rem;">${demoBadgeText}</span>` : "";
-      titleElement.innerHTML = content.title + demoBadge;
+      titleElement.textContent = content.title;
+      if (content.demo) {
+        const demoBadgeText = window.telarLang?.demoPanelBadge || "Demo content";
+        const badge = document.createElement("span");
+        badge.className = "demo-badge-inline";
+        badge.style.marginLeft = "0.5rem";
+        badge.textContent = demoBadgeText;
+        titleElement.appendChild(badge);
+      }
       const contentElement = document.getElementById(`${panelId}-content`);
       contentElement.innerHTML = content.html;
-      if (window.Telar && window.Telar.initializeGlossaryLinks) {
-        window.Telar.initializeGlossaryLinks(contentElement);
-      }
+      const glossaryLinks = contentElement.querySelectorAll(".glossary-inline-link");
+      glossaryLinks.forEach((el, i) => {
+        el.dataset.deepLinkN = i + 1;
+      });
+      glossaryLinks.forEach((el) => {
+        el.addEventListener("click", () => {
+          writeHashWithGlossary(parseInt(el.dataset.deepLinkN, 10));
+        });
+      });
       if (window.telarRenderLatex) {
         window.telarRenderLatex(contentElement);
       }
@@ -510,10 +5635,11 @@
       } else {
         state.panelStack.push({ type: panelType, id: contentId });
       }
-      const bsOffcanvas = new bootstrap.Offcanvas(panel);
+      const bsOffcanvas = bootstrap.Offcanvas.getInstance(panel) || new bootstrap.Offcanvas(panel);
       bsOffcanvas.show();
       state.isPanelOpen = true;
       activateScrollLock();
+      writeHash();
     }
   }
   function closePanel(panelType) {
@@ -524,9 +5650,10 @@
     if (bsOffcanvas) {
       bsOffcanvas.hide();
     }
+    state.panelStack = state.panelStack.filter((p) => p.type !== panelType);
+    writeHash();
     setTimeout(() => {
-      const anyPanelOpen = document.querySelector(".offcanvas.show");
-      if (!anyPanelOpen) {
+      if (!anyPanelOpen()) {
         state.isPanelOpen = false;
         deactivateScrollLock();
       }
@@ -536,19 +5663,10 @@
     if (state.panelStack.length > 0) {
       const top = state.panelStack[state.panelStack.length - 1];
       closePanel(top.type);
-      state.panelStack.pop();
     }
   }
   function closeAllPanels() {
-    const openPanels = document.querySelectorAll(".offcanvas.show");
-    openPanels.forEach((panel) => {
-      const bsOffcanvas = bootstrap.Offcanvas.getInstance(panel);
-      if (bsOffcanvas) {
-        bsOffcanvas.hide();
-      }
-    });
-    state.isPanelOpen = false;
-    deactivateScrollLock();
+    [...state.panelStack].reverse().forEach((p) => closePanel(p.type));
   }
   function getPanelContent(panelType, contentId) {
     const steps = window.storyData?.steps || [];
@@ -558,35 +5676,29 @@
       let html = formatPanelContent({
         text: step.layer1_text,
         media: step.layer1_media
-      });
+      }, step.object);
       if (step.layer2_title && step.layer2_title.trim() !== "" || step.layer2_text && step.layer2_text.trim() !== "") {
         const buttonLabel = step.layer2_button && step.layer2_button.trim() !== "" ? step.layer2_button : window.telarLang.goDeeper;
-        html += `<p><button class="panel-trigger" data-panel="layer2" data-step="${contentId}">${buttonLabel} \u2192</button></p>`;
+        html += `<p><button class="panel-trigger" data-panel="layer2" data-step="${contentId}">${escapeHtml(buttonLabel)} \u2192</button></p>`;
       }
       return {
-        title: step.layer1_title || step.layer1_button || "Layer 1",
+        title: step.layer1_title || step.layer1_button || window.telarLang.learnMore,
         html,
         demo: step.layer1_demo || false
       };
     } else if (panelType === "layer2") {
       return {
-        title: step.layer2_title || step.layer2_button || "Layer 2",
+        title: step.layer2_title || step.layer2_button || window.telarLang.goDeeper,
         html: formatPanelContent({
           text: step.layer2_text,
           media: step.layer2_media
-        }),
+        }, step.object),
         demo: step.layer2_demo || false
-      };
-    } else if (panelType === "glossary") {
-      return {
-        title: "Glossary Term",
-        html: "<p>Glossary content...</p>"
       };
     }
     return null;
   }
-  function formatPanelContent(panelData) {
-    if (!panelData) return "<p>No content available.</p>";
+  function formatPanelContent(panelData, objectId) {
     let html = "";
     const basePath = getBasePath();
     if (panelData.text) {
@@ -597,7 +5709,10 @@
       if (mediaUrl.startsWith("/") && !mediaUrl.startsWith("//")) {
         mediaUrl = basePath + mediaUrl;
       }
-      html += `<img src="${mediaUrl}" alt="Panel image" class="img-fluid">`;
+      const objectsData = window.objectsData || [];
+      const panelObj = objectId ? objectsData.find((o) => o.object_id === objectId) || {} : {};
+      const panelAlt = panelObj.alt_text || panelObj.title || objectId || "Panel image";
+      html += `<img src="${escapeHtml(mediaUrl)}" alt="${escapeHtml(panelAlt)}" class="img-fluid">`;
     }
     return html;
   }
@@ -610,15 +5725,13 @@
     return step.layer2_title && step.layer2_title.trim() !== "" || step.layer2_text && step.layer2_text.trim() !== "";
   }
   function initializeScrollLock() {
-    const narrativeColumn = document.querySelector(".narrative-column");
-    if (!narrativeColumn) return;
     const backdrop = document.createElement("div");
     backdrop.id = "panel-backdrop";
     backdrop.style.cssText = `
     position: fixed;
     inset: -50px;
-    background: rgba(0, 0, 0, 0.025);
-    z-index: 1040;
+    background: var(--color-panel-backdrop);
+    z-index: var(--z-panel-backdrop);
     display: none;
     pointer-events: none;
   `;
@@ -634,117 +5747,789 @@
   }
   function activateScrollLock() {
     state.scrollLockActive = true;
+    if (state.lenis) state.lenis.stop();
     const backdrop = document.getElementById("panel-backdrop");
     if (backdrop) {
       backdrop.style.display = "block";
     }
-    const narrativeColumn = document.querySelector(".narrative-column");
-    if (narrativeColumn) {
-      narrativeColumn.style.overflow = "hidden";
-    }
   }
   function deactivateScrollLock() {
     state.scrollLockActive = false;
+    if (state.lenis) state.lenis.start();
     const backdrop = document.getElementById("panel-backdrop");
     if (backdrop) {
       backdrop.style.display = "none";
     }
-    const narrativeColumn = document.querySelector(".narrative-column");
-    if (narrativeColumn) {
-      narrativeColumn.style.overflow = "";
+  }
+
+  // assets/js/telar-story/deep-link.js
+  var _deepLinkTimers = [];
+  var _lastPanelCloseAt = -Infinity;
+  function _cancelDeepLinkTimers() {
+    _deepLinkTimers.forEach(clearTimeout);
+    _deepLinkTimers = [];
+    window.removeEventListener("wheel", _cancelDeepLinkTimers);
+    window.removeEventListener("keydown", _cancelDeepLinkTimers);
+    window.removeEventListener("touchstart", _cancelDeepLinkTimers);
+  }
+  function _armDeepLinkCancellation() {
+    window.addEventListener("wheel", _cancelDeepLinkTimers, { passive: true });
+    window.addEventListener("keydown", _cancelDeepLinkTimers);
+    window.addEventListener("touchstart", _cancelDeepLinkTimers, { passive: true });
+  }
+  var FRAGMENT_RE = /^#s(\d+)(?:l(\d+)(?:(g)(\d+))?)?$/;
+  function parseFragment(hash) {
+    if (!hash || hash === "#") return null;
+    const m = FRAGMENT_RE.exec(hash);
+    if (!m) return null;
+    return {
+      step: parseInt(m[1], 10),
+      // 1-based step number
+      layer: m[2] ? parseInt(m[2], 10) : null,
+      subType: m[3] || null,
+      // 'g' or null
+      subN: m[4] ? parseInt(m[4], 10) : null
+    };
+  }
+  function writeHash() {
+    _writeHashFragment(null);
+  }
+  function writeHashWithGlossary(n) {
+    document.getElementById("panel-glossary")?.setAttribute("data-deep-link-n", String(n));
+    _writeHashFragment(n);
+  }
+  function _writeHashFragment(glossaryN) {
+    const idx = state.currentIndex;
+    let hash = "";
+    if (idx >= 0) {
+      hash = `#s${idx + 1}`;
+      if (state.panelStack.length > 0) {
+        for (let i = state.panelStack.length - 1; i >= 0; i--) {
+          const layerMatch = state.panelStack[i].type.match(/^layer(\d+)$/);
+          if (layerMatch) {
+            hash += `l${layerMatch[1]}`;
+            if (glossaryN !== null) {
+              hash += `g${glossaryN}`;
+            }
+            break;
+          }
+        }
+      }
+    }
+    if (hash) {
+      history.replaceState(null, "", hash);
+    } else {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }
+  function navigateToIntro() {
+    _cancelDeepLinkTimers();
+    closeAllPanels();
+    setMoveSeconds(moveSeconds(0));
+    reconcileStackForJump(-1);
+    reconcilePlatesForJump(-1);
+    if (state.lenis) {
+      state.currentIndex = -1;
+      state.scrollPosition = 0;
+      jumpScrollTo(0);
+      if (state.snap) state.snap.currentSnapIndex = 0;
+      state.lenis.stop();
+      requestAnimationFrame(() => {
+        if (!state.isPanelOpen) state.lenis.start();
+      });
+    }
+    goToStep(-1, "backward");
+    putButtonsOnIntro();
+    writeHash();
+  }
+  function navigateToStep(stepNumber) {
+    const targetIndex = stepNumber - 1;
+    if (targetIndex < 0 || targetIndex >= state.steps.length) return;
+    _cancelDeepLinkTimers();
+    closeAllPanels();
+    setMoveSeconds(moveSeconds(0));
+    reconcilePlatesForJump(targetIndex);
+    if (state.lenis) {
+      const targetPx = (targetIndex + 1) * state.scrollStepPx;
+      jumpScrollTo(targetPx);
+      if (state.snap) state.snap.currentSnapIndex = targetIndex + 1;
+      reconcileStackForJump(targetIndex);
+      activateCard(targetIndex, "forward");
+      state.currentIndex = targetIndex;
+      state.scrollPosition = targetIndex + 1;
+    } else {
+      reconcileStackForJump(targetIndex);
+      activateCard(targetIndex, "forward");
+      jumpButtonsTo(targetIndex);
+      updateViewerInfo(targetIndex);
+    }
+    writeHash();
+  }
+  function applyDeepLinkOnLoad() {
+    const parsed = parseFragment(window.location.hash);
+    if (!parsed) return;
+    const targetIndex = Math.min(parsed.step - 1, state.steps.length - 1);
+    if (targetIndex < 0) return;
+    _jumpToIndex(targetIndex);
+    _scheduleLayerOpen(parsed, targetIndex, 100);
+  }
+  function _jumpToIndex(targetIndex) {
+    setMoveSeconds(moveSeconds(0));
+    if (state.lenis) {
+      const targetPx = (targetIndex + 1) * state.scrollStepPx;
+      state.lenis.scrollTo(targetPx, { immediate: true, force: true });
+      if (state.snap) state.snap.currentSnapIndex = targetIndex + 1;
+      reconcileStackForJump(targetIndex);
+      activateCard(targetIndex, "forward");
+      state.currentIndex = targetIndex;
+      state.scrollPosition = targetIndex + 1;
+    } else {
+      reconcileStackForJump(targetIndex);
+      activateCard(targetIndex, "forward");
+      jumpButtonsTo(targetIndex);
+      updateViewerInfo(targetIndex);
+    }
+  }
+  function _scheduleGlossaryClick(parsed, targetIndex, delay) {
+    _deepLinkTimers.push(setTimeout(() => {
+      if (state.currentIndex !== targetIndex) return;
+      const panelContent = document.getElementById("panel-layer" + parsed.layer + "-content");
+      const target = panelContent?.querySelector(`[data-deep-link-n="${parsed.subN}"]`);
+      if (target) target.click();
+    }, delay));
+    _armDeepLinkCancellation();
+  }
+  function _scheduleLayerOpen(parsed, targetIndex, delay) {
+    if (parsed.layer === null) return;
+    const stepNumber = state.steps[targetIndex].dataset.step;
+    if (!stepNumber) return;
+    const onTarget = () => state.currentIndex === targetIndex;
+    if (parsed.layer >= 2) {
+      _deepLinkTimers.push(setTimeout(() => {
+        if (onTarget()) openPanel("layer1", stepNumber);
+      }, delay));
+      delay += 200;
+    }
+    _deepLinkTimers.push(setTimeout(() => {
+      if (onTarget()) openPanel("layer" + parsed.layer, stepNumber);
+    }, delay));
+    delay += 200;
+    if (parsed.subType === "g" && parsed.subN !== null) {
+      _scheduleGlossaryClick(parsed, targetIndex, delay);
+      return;
+    }
+    _armDeepLinkCancellation();
+  }
+  var PANEL_CLOSE_WAIT_MS = 400;
+  function _openLayerNumber() {
+    for (let i = state.panelStack.length - 1; i >= 0; i--) {
+      const m = state.panelStack[i].type.match(/^layer(\d+)$/);
+      if (m) return parseInt(m[1], 10);
+    }
+    return null;
+  }
+  function _namesIntro(hash, parsed) {
+    if (hash === "" || hash === "#") return true;
+    return parsed !== null && parsed.step < 1;
+  }
+  function _moveToIntroFromFragment() {
+    if (state.currentIndex !== -1 || state.panelStack.length > 0 || isMoveInFlight()) navigateToIntro();
+  }
+  function _nameLandedStep(parsed, targetIndex) {
+    if (parsed.step - 1 !== targetIndex) writeHash();
+  }
+  function _openGlossaryN() {
+    if (!state.panelStack.some((p) => p.type === "glossary")) return null;
+    const n = parseInt(document.getElementById("panel-glossary")?.dataset.deepLinkN, 10);
+    return Number.isNaN(n) ? -1 : n;
+  }
+  function _panelsBusy() {
+    if (state.panelStack.length > 0) return true;
+    if (Date.now() - _lastPanelCloseAt < PANEL_CLOSE_WAIT_MS) return true;
+    return !!document.querySelector("#panel-layer1, #panel-layer2, #panel-glossary") && !!document.querySelector(".offcanvas.show, .offcanvas.showing, .offcanvas.hiding");
+  }
+  function _openDelayAfterClose() {
+    if (!_panelsBusy()) return 100;
+    _lastPanelCloseAt = Date.now();
+    return PANEL_CLOSE_WAIT_MS;
+  }
+  function _settleOnStep(parsed, targetIndex) {
+    const wantG = parsed.subType === "g" ? parsed.subN : null;
+    const curG = _openGlossaryN();
+    if (_openLayerNumber() !== parsed.layer) {
+      _cancelDeepLinkTimers();
+      const delay = _openDelayAfterClose();
+      closeAllPanels();
+      writeHash();
+      _scheduleLayerOpen(parsed, targetIndex, delay);
+      return;
+    }
+    if (curG === wantG) {
+      _nameLandedStep(parsed, targetIndex);
+      return;
+    }
+    _cancelDeepLinkTimers();
+    if (curG !== null) {
+      closePanel("glossary");
+      _lastPanelCloseAt = Date.now();
+    }
+    writeHash();
+    if (wantG !== null) _scheduleGlossaryClick(parsed, targetIndex, curG !== null ? PANEL_CLOSE_WAIT_MS : 0);
+  }
+  function handleHashChange() {
+    if (!state.steps.length) return;
+    const hash = window.location.hash;
+    const parsed = parseFragment(hash);
+    if (_namesIntro(hash, parsed)) {
+      _moveToIntroFromFragment();
+      return;
+    }
+    if (!parsed) return;
+    const targetIndex = Math.min(parsed.step - 1, state.steps.length - 1);
+    if (state.currentIndex === targetIndex && !isMoveInFlight()) {
+      _settleOnStep(parsed, targetIndex);
+      return;
+    }
+    const delay = _openDelayAfterClose();
+    navigateToStep(targetIndex + 1);
+    _scheduleLayerOpen(parsed, targetIndex, delay);
+  }
+
+  // assets/js/telar-story/move-plan.js
+  function timeMove(from, to) {
+    const seconds = moveSeconds(travelBetween(from - 1, to - 1));
+    setMoveSeconds(seconds);
+    return seconds;
+  }
+  function keyboardTarget(direction, inFlight, position) {
+    const step = direction === "forward" ? 1 : -1;
+    if (inFlight !== null) return inFlight + step;
+    const rounded = Math.round(position);
+    if (Math.abs(position - rounded) < 0.01) return rounded + step;
+    return direction === "forward" ? Math.ceil(position) : Math.floor(position);
+  }
+
+  // assets/js/telar-story/story-input.js
+  function isInsidePanel(node) {
+    return node.closest(".offcanvas") !== null || node.closest("[data-telar-panel]") !== null;
+  }
+  function isStoryInput({ deltaY, event } = {}) {
+    if (!event) return true;
+    if (event.ctrlKey) return false;
+    if (deltaY === 0) return false;
+    const path = event.composedPath();
+    return !path.some((node) => node instanceof HTMLElement && isInsidePanel(node));
+  }
+
+  // assets/js/telar-story/scroll-engine.js
+  var lenis;
+  var snap;
+  var snapRemovers = [];
+  var rafId;
+  var dwellTimer;
+  var dwellHeld;
+  var lastInputAt;
+  var recentSizes;
+  var runStart;
+  var snapRun;
+  var snapRef;
+  var landedAt;
+  var _resetInputHistory = () => {
+    dwellHeld = false;
+    snapRun = null;
+    snapRef = Infinity;
+    lastInputAt = runStart = -Infinity;
+    recentSizes = [];
+  };
+  _resetInputHistory();
+  var scrubEndTimer;
+  var cardStackEl;
+  var totalPositions = 0;
+  var keyboardNavInFlight = false;
+  var navToken = 0;
+  var navSeq = 0;
+  var navTarget = null;
+  var navTargetToken = 0;
+  var scrollDirection = 1;
+  var lastPosition = 0;
+  var moveTarget = null;
+  var moveTargetToken = 0;
+  var buttonMoveToken = 0;
+  var remapping = false;
+  function beginNav() {
+    navToken = ++navSeq;
+    return navToken;
+  }
+  function _recordMoveTarget(token, position) {
+    moveTarget = position;
+    moveTargetToken = token;
+  }
+  function _stepPx() {
+    return state.scrollStepPx || window.innerHeight;
+  }
+  function _stateLanding(token, position) {
+    if (navToken === token) state.scrollPosition = position;
+  }
+  function endNav(token) {
+    if (navToken === token) navToken = 0;
+  }
+  function _clampPosition(position) {
+    return Math.max(0, Math.min(position, totalPositions - 1));
+  }
+  var SCROLL_MOVING_PX = 0.5;
+  var armedAt = 0;
+  var REST_TOLERANCE = 1e-3;
+  var WHEEL_GESTURE_GAP_MS = 200;
+  var RISE_PX = 2;
+  var MAX_HOLD_MS = 3e3;
+  function _endDwell() {
+    const now = performance.now();
+    const wait = Math.min(WHEEL_GESTURE_GAP_MS - (now - lastInputAt), landedAt + MAX_HOLD_MS - now);
+    dwellHeld = runStart === snapRun && wait > 0;
+    dwellTimer = dwellHeld ? setTimeout(_endDwell, wait) : null;
+    if (!dwellTimer && !state.isPanelOpen) lenis.start();
+  }
+  function _beginsGesture(event, now, size) {
+    if (event?.type?.startsWith("touch")) return true;
+    if (runStart === snapRun && !state.isSnapping && size >= snapRef) return true;
+    return now - lastInputAt >= WHEEL_GESTURE_GAP_MS ? !(size < (recentSizes.at(-1) ?? 0)) : size > Math.max(0, ...recentSizes) + RISE_PX;
+  }
+  function _noteInput({ deltaY = 0, event } = {}) {
+    const now = performance.now(), size = Math.abs(deltaY);
+    if (_beginsGesture(event, now, size)) [runStart, recentSizes] = [now, []];
+    [recentSizes, lastInputAt] = [[...recentSizes.slice(-2), size], now];
+    if (dwellHeld && runStart !== snapRun) _clearDwell();
+  }
+  function initScrollEngine(stepCount) {
+    const surface = document.querySelector(".scroll-surface");
+    const cardStack = document.querySelector(".card-stack");
+    if (!surface || !cardStack) {
+      console.error("scroll-engine: .scroll-surface or .card-stack not found in DOM");
+      return;
+    }
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    if (dwellTimer) {
+      clearTimeout(dwellTimer);
+      dwellTimer = null;
+    }
+    if (scrubEndTimer) {
+      clearTimeout(scrubEndTimer);
+      scrubEndTimer = null;
+    }
+    _resetInputHistory();
+    armedAt = navToken = navTargetToken = moveTargetToken = buttonMoveToken = 0;
+    navTarget = moveTarget = null;
+    remapping = keyboardNavInFlight = false;
+    state.steps = Array.from(document.querySelectorAll(".story-step"));
+    history.scrollRestoration = "manual";
+    totalPositions = stepCount + 1;
+    state.scrollStepPx = window.innerHeight;
+    surface.style.height = `${totalPositions * state.scrollStepPx}px`;
+    const prefersReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    lenis = new Lenis({
+      lerp: 0.06,
+      // lower = heavier, more contemplative feel
+      smoothWheel: !prefersReduced,
+      wheelMultiplier: 0.5,
+      // scroll sensitivity
+      autoRaf: false,
+      // we drive the rAF loop manually
+      prevent: isInsidePanel
+      // let wheel events pass through inside open panels
+    });
+    snap = new Snap(lenis, {
+      type: "lock",
+      velocityThreshold: 0.5,
+      debounce: 150,
+      distanceThreshold: "20%",
+      lerp: 0.08,
+      onSnapStart: () => {
+        state.isSnapping = true;
+        [snapRun, snapRef] = [runStart, recentSizes.at(-1) ?? Infinity];
+      },
+      onSnapComplete: () => {
+        state.isSnapping = false;
+        const layoutStale = remapping || window.innerHeight !== _stepPx();
+        const finalPosition = layoutStale && Number.isInteger(snap.currentSnapIndex) ? snap.currentSnapIndex : lenis.animatedScroll / _stepPx();
+        updateScrollPosition(finalPosition);
+        writeHash();
+        lenis.stop();
+        landedAt = performance.now();
+        dwellTimer = setTimeout(_endDwell, moveSecondsNow() * 1e3);
+      }
+    });
+    registerSnapPoints(totalPositions);
+    cardStackEl = cardStack;
+    lenis.on("virtual-scroll", (payload) => {
+      const readerInput = isStoryInput(payload);
+      if (readerInput) _noteInput(payload);
+      cardStack.classList.add("is-scrubbing");
+      if (readerInput && !(payload?.event && (lenis.isStopped || lenis.isLocked))) {
+        navTarget = null;
+        keyboardNavInFlight = false;
+        navToken = 0;
+        buttonMoveToken = 0;
+        setMoveSeconds(moveSeconds(0));
+      }
+      armScrubEnd();
+    });
+    lenis.on("scroll", (l) => {
+      if (remapping || window.innerHeight !== _stepPx()) return;
+      const position = l.animatedScroll / _stepPx();
+      if (position !== lastPosition) {
+        scrollDirection = position > lastPosition ? 1 : -1;
+        lastPosition = position;
+      }
+      updateScrollPosition(position);
+      if (!navToken && Math.abs(l.animatedScroll - armedAt) >= SCROLL_MOVING_PX) {
+        armedAt = l.animatedScroll;
+        armScrubEnd();
+      }
+    });
+    rafId = requestAnimationFrame(function raf(time) {
+      lenis.raf(time);
+      rafId = requestAnimationFrame(raf);
+    });
+    onViewportResize(({ viewport }) => {
+      if (viewport.h === _stepPx()) {
+        surface.style.height = `${totalPositions * viewport.h}px`;
+        lenis.resize();
+        registerSnapPoints(totalPositions);
+        return;
+      }
+      _remapToHeight(surface, viewport.h);
+    });
+    state.lenis = lenis;
+    state.snap = snap;
+    initKeyboardNavigation();
+    initializeLoadingShimmer();
+  }
+  function armScrubEnd() {
+    clearTimeout(scrubEndTimer);
+    scrubEndTimer = setTimeout(endScrub, 100);
+  }
+  function endScrub({ carry = true, settle = true } = {}) {
+    clearTimeout(scrubEndTimer);
+    scrubEndTimer = null;
+    if (!cardStackEl) return;
+    cardStackEl.classList.remove("is-scrubbing");
+    if (!lenis) return;
+    const position = lenis.animatedScroll / _stepPx();
+    if (settle) settleCards(position);
+    if (carry) carryToNearestStep(position);
+  }
+  function carryToNearestStep(position) {
+    if (navToken || state.isSnapping) return;
+    const target = scrollDirection < 0 ? Math.floor(position) : Math.ceil(position);
+    if (Math.abs(position - target) < REST_TOLERANCE) return;
+    if (target < 0 || target >= totalPositions) return;
+    const nearest = target;
+    const token = beginNav();
+    _recordMoveTarget(token, nearest);
+    const seconds = timeMove(position, nearest);
+    lenis.scrollTo(nearest * _stepPx(), {
+      duration: seconds,
+      easing: (t) => 1 - Math.pow(1 - t, 3),
+      // ease-out cubic
+      onComplete: () => {
+        _stateLanding(token, nearest);
+        endNav(token);
+        writeHash();
+      }
+    });
+  }
+  function _positionToKeep() {
+    const px = _stepPx();
+    let position = state.scrollPosition;
+    let moving = false;
+    if (lenis.isScrolling === "smooth") {
+      moving = true;
+      if (navToken && moveTargetToken === navToken && moveTarget !== null) {
+        position = moveTarget;
+      } else if (state.isSnapping && Number.isInteger(snap.currentSnapIndex)) {
+        position = snap.currentSnapIndex;
+      } else {
+        position = lenis.targetScroll / px;
+      }
+    }
+    const rounded = Math.round(position);
+    if (Math.abs(position - rounded) < REST_TOLERANCE) position = rounded;
+    return { position: _clampPosition(position), moving };
+  }
+  function _remapToHeight(surface, height) {
+    const { position, moving } = _positionToKeep();
+    const enteredFrom = state.currentIndex;
+    remapping = true;
+    if (moving && !lenis.isStopped) {
+      lenis.stop();
+      lenis.start();
+    }
+    state.scrollStepPx = height;
+    surface.style.height = `${totalPositions * height}px`;
+    lenis.resize();
+    lenis.scrollTo(position * height, { immediate: true, force: true });
+    remapping = false;
+    registerSnapPoints(totalPositions);
+    if (moving) {
+      navToken = 0;
+      navTarget = null;
+      navTargetToken = 0;
+      buttonMoveToken = 0;
+      keyboardNavInFlight = false;
+      state.isSnapping = false;
+      if (Number.isInteger(position)) snap.currentSnapIndex = position;
+    }
+    lastPosition = position;
+    updateScrollPosition(position);
+    armScrubEnd();
+    if (moving || state.currentIndex !== enteredFrom) writeHash();
+  }
+  function registerSnapPoints(count) {
+    snapRemovers.forEach((fn) => fn());
+    snapRemovers = [];
+    for (let i = 0; i < count; i++) {
+      snapRemovers.push(snap.add(i * _stepPx()));
+    }
+  }
+  function advanceToStep(targetIndex) {
+    if (targetIndex < -1 || targetIndex >= state.steps.length) return false;
+    const lenisInstance = state.lenis || lenis;
+    if (!lenisInstance) return false;
+    _clearDwell();
+    if (lenisInstance.isStopped || lenisInstance.isLocked) return false;
+    const token = beginNav();
+    buttonMoveToken = token;
+    keyboardNavInFlight = false;
+    navTarget = null;
+    _recordMoveTarget(token, targetIndex + 1);
+    const seconds = timeMove(lenisInstance.animatedScroll / _stepPx(), targetIndex + 1);
+    endScrub({ carry: false });
+    const targetPx = (targetIndex + 1) * _stepPx();
+    _endMoveHeldAt(lenisInstance, targetPx);
+    lenisInstance.scrollTo(targetPx, {
+      duration: seconds,
+      easing: (t) => 1 - Math.pow(1 - t, 3),
+      // ease-out cubic
+      onComplete: () => {
+        _stateLanding(token, targetIndex + 1);
+        if (buttonMoveToken === token) buttonMoveToken = 0;
+        endNav(token);
+        followEngine(state.currentIndex);
+        writeHash();
+      }
+    });
+    return true;
+  }
+  function buttonHeading() {
+    const ownMove = navToken && (navToken === buttonMoveToken || navToken === navTargetToken);
+    if (ownMove && moveTargetToken === navToken && moveTarget !== null) return moveTarget - 1;
+    return state.currentIndex;
+  }
+  function _endMoveHeldAt(lenisInstance, px) {
+    if (px !== lenisInstance.targetScroll || lenisInstance.isScrolling !== "smooth") return;
+    keyboardNavInFlight = false;
+    lenisInstance.stop();
+    lenisInstance.start();
+  }
+  function jumpScrollTo(px) {
+    standDownMoves();
+    _endMoveHeldAt(state.lenis, px);
+    state.lenis.scrollTo(px, { immediate: true, force: true });
+  }
+  function isMoveInFlight() {
+    return navToken !== 0 || keyboardNavInFlight || state.isSnapping === true;
+  }
+  function standDownMoves() {
+    navToken = 0;
+    navTarget = null;
+    navTargetToken = 0;
+    moveTarget = null;
+    moveTargetToken = 0;
+    buttonMoveToken = 0;
+    keyboardNavInFlight = false;
+    state.isSnapping = false;
+  }
+  function _clearDwell() {
+    dwellHeld = false;
+    if (dwellTimer) {
+      clearTimeout(dwellTimer);
+      dwellTimer = null;
+      if (!state.isPanelOpen) lenis.start();
+    }
+  }
+  function _activateKeyboardTarget(target, direction) {
+    const targetStep = target - 1;
+    if (targetStep >= 0 && targetStep !== state.currentIndex) {
+      _enterStep(targetStep, direction);
+    } else if (targetStep < 0 && state.currentIndex >= 0) {
+      _enterStep(-1, "backward");
+    }
+  }
+  function _enterStep(stepIndex, direction) {
+    if (stepIndex < 0) {
+      goToStep(-1, "backward");
+    } else {
+      state.scrollDriven = true;
+      activateCard(stepIndex, direction);
+      state.scrollDriven = false;
+      state.currentIndex = stepIndex;
+      updateViewerInfo(stepIndex);
+      if (state.onStepChange) state.onStepChange(stepIndex);
+    }
+    followEngine(stepIndex);
+  }
+  function keyboardNav(direction) {
+    if (!lenis) return;
+    const inFlight = navTargetToken === navToken ? navTarget : null;
+    if (inFlight !== null && _clampPosition(inFlight + (direction === "forward" ? 1 : -1)) === inFlight) {
+      return;
+    }
+    const token = beginNav();
+    navTargetToken = token;
+    endScrub({ carry: false, settle: false });
+    _clearDwell();
+    const vh = _stepPx();
+    const position = lenis.animatedScroll / vh;
+    const isExact = Math.abs(position - Math.round(position)) < 0.01;
+    const rounded = Math.round(position);
+    const target = _clampPosition(keyboardTarget(direction, inFlight, position));
+    if (inFlight === null && target === rounded && isExact) {
+      endNav(token);
+      return;
+    }
+    navTarget = target;
+    _recordMoveTarget(token, target);
+    const seconds = timeMove(position, target);
+    settleCards(target);
+    snap.currentSnapIndex = target;
+    _activateKeyboardTarget(target, direction);
+    keyboardNavInFlight = true;
+    _endMoveHeldAt(lenis, target * vh);
+    lenis.scrollTo(target * vh, {
+      force: true,
+      duration: seconds,
+      easing: (t) => 1 - Math.pow(1 - t, 3),
+      // ease-out cubic
+      onComplete: () => {
+        _stateLanding(token, target);
+        if (navToken === token) {
+          keyboardNavInFlight = false;
+          navTarget = null;
+        }
+        endNav(token);
+        writeHash();
+      }
+    });
+  }
+  function getScrollEngineState() {
+    return {
+      lenis,
+      snap,
+      position: state.scrollPosition,
+      progress: state.scrollProgress
+    };
+  }
+  function updateScrollPosition(position) {
+    const contentPos = position - 1;
+    const maxContent = state.steps.length - 1;
+    state.scrollPosition = position;
+    if (position < 1) {
+      state.scrollProgress = 0;
+      if (state.currentIndex >= 0 && !keyboardNavInFlight) {
+        _enterStep(-1, "backward");
+      }
+      if (!keyboardNavInFlight) settleCards(position);
+      return;
+    }
+    const clamped = Math.min(maxContent, contentPos);
+    const stepIndex = Math.floor(clamped);
+    const progress = clamped - stepIndex;
+    state.scrollProgress = progress;
+    if (!keyboardNavInFlight || progress >= 1e-3) setCardProgress(stepIndex, progress);
+    lerpIiifPosition(stepIndex, progress, state.stepsData);
+    if (stepIndex !== state.currentIndex && !keyboardNavInFlight) {
+      _enterStep(stepIndex, stepIndex > state.currentIndex ? "forward" : "backward");
     }
   }
 
   // assets/js/telar-story/navigation.js
-  function initializeStepController() {
-    state.steps = Array.from(document.querySelectorAll(".story-step"));
-    initializeLoadingShimmer();
-    state.steps.forEach((step, index) => {
-      step.style.zIndex = index + 1;
-      step.dataset.stepIndex = index;
-    });
-    if (state.steps.length > 0) {
-      goToStep(0, "forward");
-    }
+  function initKeyboardNavigation() {
     document.addEventListener("keydown", handleKeyboard);
-    window.addEventListener("wheel", handleScroll, { passive: false });
-    window.addEventListener("touchstart", handleTouchStart, { passive: true });
-    window.addEventListener("touchend", handleTouchEnd, { passive: true });
-    console.log(`Step controller initialized with ${state.steps.length} steps`);
   }
   function goToStep(newIndex, direction = "forward") {
-    if (newIndex < 0) {
-      console.log(`Cannot go to step ${newIndex}: already at first step (0)`);
-      return;
-    }
-    if (newIndex >= state.steps.length) {
-      console.log(`Cannot go to step ${newIndex}: already at last step (${state.steps.length - 1})`);
-      return;
-    }
-    const oldIndex = state.currentIndex;
-    const newStep = state.steps[newIndex];
-    const oldStep = oldIndex >= 0 ? state.steps[oldIndex] : null;
-    console.log(`goToStep: ${oldIndex} \u2192 ${newIndex} (${direction})`);
-    state.lastStepChangeTime = Date.now();
-    if (oldIndex === 0 && newIndex > 0) {
-      const intro = state.steps[0];
-      if (intro.classList.contains("story-intro")) {
-        intro.style.transform = "translateY(-100%)";
-        intro.style.zIndex = "0";
-      }
-    } else if (newIndex === 0 && oldIndex > 0) {
-      const intro = state.steps[0];
-      if (intro.classList.contains("story-intro")) {
-        intro.style.zIndex = "100";
-        intro.style.transform = "translateY(0)";
-      }
-      state.currentViewerCard = null;
-      state.currentObject = null;
-    }
-    if (direction === "backward" && oldStep && oldIndex !== 0) {
-      oldStep.classList.remove("is-active");
-    }
+    if (newIndex < -1 || newIndex >= state.steps.length) return;
     state.currentIndex = newIndex;
-    const objectId = newStep.dataset.object;
-    const x = parseFloat(newStep.dataset.x);
-    const y = parseFloat(newStep.dataset.y);
-    const zoom = parseFloat(newStep.dataset.zoom);
-    const page = newStep.dataset.page ? parseInt(newStep.dataset.page, 10) : void 0;
-    const isLeavingIntro = oldIndex === 0 && newIndex > 0;
-    const pageChanged = state.currentViewerCard && state.currentViewerCard.page !== (page || void 0);
-    if (objectId && (!state.currentViewerCard || state.currentViewerCard.objectId !== objectId || isLeavingIntro || pageChanged)) {
-      console.log(`Switching to new object: ${objectId}${isLeavingIntro ? " (leaving intro)" : ""}${pageChanged ? ` (page changed to ${page})` : ""}`);
-      switchToObject(objectId, newIndex, x, y, zoom, newStep, direction, page);
-      state.currentObject = objectId;
-    } else {
-      console.log(`Same object, activating text and animating viewer`);
-      if (direction === "forward" && state.currentViewerCard) {
-        state.currentViewerCard.element.classList.remove("card-below");
-        state.currentViewerCard.element.classList.add("card-active");
-      }
-      if (direction === "forward") {
-        newStep.offsetHeight;
-        requestAnimationFrame(() => {
-          newStep.classList.add("is-active");
-        });
-      }
-      if (state.currentViewerCard && !isNaN(x) && !isNaN(y) && !isNaN(zoom)) {
-        if (state.currentViewerCard.isReady) {
-          animateViewerToPosition(state.currentViewerCard, x, y, zoom);
-        } else {
-          console.warn("Viewer not ready, queueing zoom");
-          state.currentViewerCard.pendingZoom = { x, y, zoom, snap: false };
-        }
-      }
+    if (newIndex === -1) {
+      _restoreIntro();
+      return;
     }
+    activateCard(newIndex, direction);
     updateViewerInfo(newIndex);
-    preloadNearbyViewers(newIndex, 3, 2);
+    if (state.onStepChange) state.onStepChange(newIndex);
   }
-  function nextStep() {
-    goToStep(state.currentIndex + 1, "forward");
+  function _restoreIntro() {
+    _showIntroCard();
+    _sendFirstTextCardOffScreen();
+    releaseTitleCardsForIntro();
+    _sendPlateOffScreen(state.viewerPlates?.[window.storyData?.firstObject]);
+    state.currentObjectScene = { objectId: null, scenePosition: 0 };
+    _hideStepChrome();
+    if (state.onStepChange) state.onStepChange(-1);
   }
-  function prevStep() {
-    goToStep(state.currentIndex - 1, "backward");
+  function _showIntroCard() {
+    const intro = document.querySelector(".story-intro");
+    if (!intro) return;
+    intro.style.transition = "transform var(--card-motion-duration) var(--card-motion-easing)";
+    intro.style.transform = "translateY(0)";
+  }
+  function _sendFirstTextCardOffScreen() {
+    const firstCard = state.textCards?.[0];
+    if (!firstCard) return;
+    firstCard.classList.remove("is-active", "is-stacked");
+    const rot = parseFloat(firstCard.dataset.messinessRot || 0);
+    const offX = parseFloat(firstCard.dataset.messinessOffX || 0);
+    const offY = parseFloat(firstCard.dataset.messinessOffY || 0);
+    firstCard.style.transform = `translateY(100vh) rotate(${rot}deg) translate(${offX}px, ${offY}px)`;
+  }
+  function _sendPlateOffScreen(plate) {
+    if (!plate) return;
+    plate.container.style.transform = "translateY(100%)";
+    plate.container.classList.remove("is-active");
+  }
+  function _hideStepChrome() {
+    updateViewerInfo(-1);
+    const creditBadge = document.getElementById("object-credits-badge");
+    if (creditBadge) creditBadge.classList.add("d-none");
+  }
+  function recordButtonStep(index2) {
+    if (state.lenis) return;
+    state.currentIndex = index2;
+    if (state.onStepChange) state.onStepChange(index2);
+  }
+  function jumpButtonsTo(index2) {
+    state.currentButtonStep = index2;
+    state.buttonInIntro = false;
+    state.steps.forEach((step, i) => step.classList.toggle("mobile-active", i === index2));
+    updateButtonNavStates();
+    recordButtonStep(index2);
+  }
+  function putButtonsOnIntro() {
+    if (!state.buttonNavButtons) return;
+    state.buttonInIntro = true;
+    state.currentButtonStep = 0;
+    state.steps.forEach((step, i) => step.classList.toggle("mobile-active", i === 0));
+    updateButtonNavStates();
+  }
+  function followEngine(index2) {
+    if (!state.buttonNavButtons) return;
+    if (index2 < 0) {
+      putButtonsOnIntro();
+    } else {
+      jumpButtonsTo(index2);
+    }
   }
   function createNavigationButtons() {
     if (document.querySelector(".mobile-nav")) {
@@ -766,8 +6551,8 @@
     document.body.appendChild(navContainer);
     return { container: navContainer, prev: prevButton, next: nextButton };
   }
-  function initializeButtonNavigation(mode) {
-    console.log(`Initializing ${mode} button navigation`);
+  function initializeButtonNavigation() {
+    document.documentElement.dataset.navigation = "buttons";
     state.steps = Array.from(document.querySelectorAll(".story-step"));
     initializeLoadingShimmer();
     state.steps.forEach((step) => {
@@ -775,176 +6560,249 @@
     });
     if (state.steps.length > 0) {
       state.steps[0].classList.add("mobile-active");
-      state.currentMobileStep = 0;
+      state.currentButtonStep = 0;
     }
+    state.buttonInIntro = !!document.querySelector(".story-intro");
     const buttons = createNavigationButtons();
     if (!buttons) return;
-    state.mobileNavButtons = { prev: buttons.prev, next: buttons.next };
-    buttons.prev.addEventListener("click", goToPreviousMobileStep);
-    buttons.next.addEventListener("click", goToNextMobileStep);
-    updateMobileButtonStates();
-    console.log(`${mode.charAt(0).toUpperCase() + mode.slice(1)} navigation initialized with ${state.steps.length} steps`);
+    state.buttonNavButtons = { prev: buttons.prev, next: buttons.next };
+    buttons.prev.addEventListener("click", goToPreviousButtonStep);
+    buttons.next.addEventListener("click", goToNextButtonStep);
+    updateButtonNavStates();
+    initKeyboardNavigation();
   }
-  function goToNextMobileStep() {
-    if (state.currentMobileStep >= state.steps.length - 1) {
-      console.log("Already at last step");
+  function goToNextButtonStep() {
+    if (state.lenis) {
+      _moveThroughEngine(buttonHeading() + 1);
       return;
     }
-    goToMobileStep(state.currentMobileStep + 1);
-  }
-  function goToPreviousMobileStep() {
-    if (state.currentMobileStep <= 0) {
-      console.log("Already at first step");
+    if (state.buttonInIntro) {
+      _dismissButtonIntro();
       return;
     }
-    goToMobileStep(state.currentMobileStep - 1);
+    if (state.currentButtonStep >= state.steps.length - 1) {
+      return;
+    }
+    goToButtonStep(state.currentButtonStep + 1);
   }
-  function goToMobileStep(newIndex) {
+  function goToPreviousButtonStep() {
+    if (state.lenis) {
+      _moveThroughEngine(buttonHeading() - 1);
+      return;
+    }
+    if (state.buttonInIntro) {
+      return;
+    }
+    if (state.currentButtonStep === 0) {
+      _restoreButtonIntro();
+      return;
+    }
+    goToButtonStep(state.currentButtonStep - 1);
+  }
+  function _restoreButtonIntro() {
+    if (state.buttonNavCooldown) return;
+    state.buttonNavCooldown = true;
+    setTimeout(() => {
+      state.buttonNavCooldown = false;
+    }, BUTTON_NAV_COOLDOWN);
+    setMoveSeconds(moveSeconds(0));
+    _showIntroCard();
+    _sendFirstTextCardOffScreen();
+    _sendPlateOffScreen(state.viewerPlates[0]);
+    state.currentObjectScene = { objectId: null, scenePosition: 0 };
+    _hideStepChrome();
+    putButtonsOnIntro();
+    recordButtonStep(-1);
+    writeHash();
+  }
+  function _dismissButtonIntro() {
+    if (state.buttonNavCooldown) return;
+    state.buttonNavCooldown = true;
+    setTimeout(() => {
+      state.buttonNavCooldown = false;
+    }, BUTTON_NAV_COOLDOWN);
+    state.buttonInIntro = false;
+    setMoveSeconds(moveSeconds(0));
+    const intro = document.querySelector(".story-intro");
+    if (intro) {
+      intro.style.transition = "transform var(--card-motion-duration) var(--card-motion-easing)";
+      intro.style.transform = "translateY(-100%)";
+    }
+    state.currentButtonStep = 0;
+    activateCard(0, "forward");
+    updateViewerInfo(0);
+    updateButtonNavStates();
+    recordButtonStep(0);
+    writeHash();
+  }
+  function _moveThroughEngine(newIndex) {
+    if (newIndex < -1 || newIndex >= state.steps.length) return;
+    if (state.buttonNavCooldown) return;
+    if (!advanceToStep(newIndex)) return;
+    state.buttonNavCooldown = true;
+    setTimeout(() => {
+      state.buttonNavCooldown = false;
+    }, BUTTON_NAV_COOLDOWN);
+    if (newIndex >= 0) {
+      const plate = state.viewerPlates[state.stepToScene[newIndex]];
+      if (!plate || !plate.isReady) showViewerSkeletonState();
+    }
+  }
+  function goToButtonStep(newIndex) {
     if (newIndex < 0 || newIndex >= state.steps.length) {
       return;
     }
-    if (state.mobileNavigationCooldown) {
-      console.log("Mobile navigation on cooldown, ignoring tap");
+    if (state.buttonNavCooldown) {
       return;
     }
-    const newStep = state.steps[newIndex];
-    const objectId = newStep.dataset.object;
-    const viewerCard = state.viewerCards.find((vc) => vc.objectId === objectId);
-    if (!viewerCard || !viewerCard.isReady) {
+    const plate = state.viewerPlates[state.stepToScene[newIndex]];
+    if (!plate || !plate.isReady) {
       showViewerSkeletonState();
     }
-    state.mobileNavigationCooldown = true;
+    state.buttonNavCooldown = true;
     setTimeout(() => {
-      state.mobileNavigationCooldown = false;
-    }, MOBILE_NAV_COOLDOWN);
-    console.log(`Mobile navigation: ${state.currentMobileStep} \u2192 ${newIndex}`);
-    state.steps[state.currentMobileStep].classList.remove("mobile-active");
+      state.buttonNavCooldown = false;
+    }, BUTTON_NAV_COOLDOWN);
+    const direction = newIndex > state.currentButtonStep ? "forward" : "backward";
+    const travel = travelBetween(state.currentButtonStep, newIndex);
+    state.steps[state.currentButtonStep].classList.remove("mobile-active");
     state.steps[newIndex].classList.add("mobile-active");
-    state.currentMobileStep = newIndex;
-    updateMobileButtonStates();
-    const x = parseFloat(newStep.dataset.x);
-    const y = parseFloat(newStep.dataset.y);
-    const zoom = parseFloat(newStep.dataset.zoom);
-    const page = newStep.dataset.page ? parseInt(newStep.dataset.page, 10) : void 0;
-    const mobilePageChanged = state.currentViewerCard && state.currentViewerCard.page !== (page || void 0);
-    if (objectId && (!state.currentViewerCard || state.currentViewerCard.objectId !== objectId || mobilePageChanged)) {
-      console.log(`Switching to object: ${objectId}${mobilePageChanged ? ` (page changed to ${page})` : ""}`);
-      switchToObjectMobile(objectId, newIndex, x, y, zoom, page);
-      state.currentObject = objectId;
-    } else if (state.currentViewerCard && !isNaN(x) && !isNaN(y) && !isNaN(zoom)) {
-      if (state.currentViewerCard.isReady) {
-        animateViewerToPosition(state.currentViewerCard, x, y, zoom);
-      } else {
-        state.currentViewerCard.pendingZoom = { x, y, zoom, snap: false };
-      }
-    }
+    state.currentButtonStep = newIndex;
+    updateButtonNavStates();
+    setMoveSeconds(moveSeconds(travel));
+    activateCard(newIndex, direction);
     updateViewerInfo(newIndex);
-    preloadNearbyViewers(newIndex, 2, 2);
+    recordButtonStep(newIndex);
+    writeHash();
   }
-  function updateMobileButtonStates() {
-    if (!state.mobileNavButtons) return;
-    state.mobileNavButtons.prev.disabled = state.currentMobileStep === 0;
-    state.mobileNavButtons.next.disabled = state.currentMobileStep === state.steps.length - 1;
+  function updateButtonNavStates() {
+    if (!state.buttonNavButtons) return;
+    state.buttonNavButtons.prev.disabled = !!state.buttonInIntro;
+    state.buttonNavButtons.next.disabled = state.currentButtonStep === state.steps.length - 1;
   }
+  var KEY_ACTIONS = /* @__PURE__ */ new Map([
+    ["ArrowDown", (e) => _stepKey(e, "forward")],
+    ["PageDown", (e) => _stepKey(e, "forward")],
+    ["ArrowUp", (e) => _stepKey(e, "backward")],
+    ["PageUp", (e) => _stepKey(e, "backward")],
+    ["ArrowRight", (e) => _rightKey(e)],
+    ["ArrowLeft", (e) => _leftKey(e)],
+    ["Escape", (e) => _escapeKey(e)],
+    [" ", (e) => _spaceKey(e)],
+    ["Home", (e) => _edgeKey(e, "start")],
+    ["End", (e) => _edgeKey(e, "end")]
+  ]);
+  var REPEAT_CANCELLED_KEYS = /* @__PURE__ */ new Set([
+    "ArrowDown",
+    "PageDown",
+    "ArrowUp",
+    "PageUp",
+    "Home",
+    "End",
+    " "
+  ]);
   function handleKeyboard(e) {
-    switch (e.key) {
-      case "ArrowDown":
-      case "PageDown":
-        e.preventDefault();
-        if (!state.scrollLockActive) {
-          nextStep();
-        }
-        break;
-      case "ArrowUp":
-      case "PageUp":
-        e.preventDefault();
-        if (!state.scrollLockActive) {
-          prevStep();
-        }
-        break;
-      case "ArrowRight":
-        e.preventDefault();
-        if (!state.isPanelOpen) {
-          const stepForL1 = getCurrentStepData();
-          const stepNumForL1 = getCurrentStepNumber();
-          if (stepForL1 && stepHasLayer1Content(stepForL1)) {
-            openPanel("layer1", stepNumForL1);
-          }
-        } else if (state.panelStack.length === 1 && state.panelStack[0]?.type === "layer1") {
-          const stepForL2 = getCurrentStepData();
-          const stepNumForL2 = getCurrentStepNumber();
-          if (stepForL2 && stepHasLayer2Content(stepForL2)) {
-            openPanel("layer2", stepNumForL2);
-          }
-        }
-        break;
-      case "ArrowLeft":
-        e.preventDefault();
-        if (state.isPanelOpen) {
-          closeTopPanel();
-        }
-        break;
-      case "Escape":
-        if (state.isPanelOpen) {
-          e.preventDefault();
-          closeTopPanel();
-        }
-        break;
-      case " ":
-        e.preventDefault();
-        if (!state.scrollLockActive) {
-          if (e.shiftKey) {
-            prevStep();
-          } else {
-            nextStep();
-          }
-        }
-        break;
+    if (e.repeat && !state.isPanelOpen) {
+      _repeatKey(e);
+      return;
+    }
+    KEY_ACTIONS.get(e.key)?.(e);
+  }
+  function _repeatKey(e) {
+    if (_isInOpenDialog(e)) return;
+    if (e.key === " " && _isSpaceControl(e)) return;
+    if (REPEAT_CANCELLED_KEYS.has(e.key)) e.preventDefault();
+  }
+  function _stepKey(e, direction) {
+    if (_isInOpenDialog(e)) return;
+    if (_panelTookScroll(direction === "forward" ? 40 : -40)) return;
+    e.preventDefault();
+    _navigateStep(direction);
+  }
+  function _rightKey(e) {
+    if (_isInOpenDialog(e)) return;
+    e.preventDefault();
+    _openNextLayer();
+  }
+  function _leftKey(e) {
+    if (_isInOpenDialog(e)) return;
+    e.preventDefault();
+    _closeTopmostPanel(e);
+  }
+  function _escapeKey(e) {
+    if (_isInOpenDialog(e)) return;
+    _closeTopmostPanel(e);
+  }
+  var SPACE_CONTROLS = 'button, summary, [role="button"], input, select, textarea, [contenteditable]:not([contenteditable="false"])';
+  function _isSpaceControl(e) {
+    const target = e.target;
+    return !!(target && target.closest && target.closest(SPACE_CONTROLS));
+  }
+  function _isInOpenDialog(e) {
+    const target = e.target;
+    return !!(target && target.closest && target.closest(".modal, dialog[open]"));
+  }
+  function _edgeKey(e, edge) {
+    if (state.isPanelOpen || _isInOpenDialog(e)) return;
+    e.preventDefault();
+    if (state.scrollLockActive) return;
+    if (edge === "start") {
+      navigateToIntro();
+    } else {
+      navigateToStep(state.steps.length);
     }
   }
-  function handleScroll(e) {
-    if (state.scrollLockActive) {
-      state.scrollAccumulator = 0;
+  function _spaceKey(e) {
+    if (_isSpaceControl(e) || _isInOpenDialog(e)) return;
+    e.preventDefault();
+    if (_panelTookScroll(e.shiftKey ? -100 : 100)) return;
+    const direction = e.shiftKey ? "backward" : "forward";
+    _navigateStep(direction);
+  }
+  function _panelTookScroll(delta) {
+    if (!state.isPanelOpen) return false;
+    scrollOpenPanel(delta);
+    return true;
+  }
+  function _navigateStep(direction) {
+    if (state.scrollLockActive) return;
+    if (state.lenis) {
+      keyboardNav(direction);
       return;
     }
-    if (e.target.closest(".viewer-column")) {
-      return;
-    }
-    const now = Date.now();
-    const timeSinceLastChange = now - state.lastStepChangeTime;
-    if (timeSinceLastChange < STEP_COOLDOWN) {
-      state.scrollAccumulator *= 0.5;
-      return;
-    }
-    const cappedDelta = Math.max(-MAX_SCROLL_DELTA, Math.min(MAX_SCROLL_DELTA, e.deltaY));
-    state.scrollAccumulator += cappedDelta;
-    if (state.scrollAccumulator >= state.scrollThreshold) {
-      nextStep();
-      state.scrollAccumulator = 0;
-    } else if (state.scrollAccumulator <= -state.scrollThreshold) {
-      prevStep();
-      state.scrollAccumulator = 0;
+    if (direction === "forward") {
+      goToNextButtonStep();
+    } else {
+      goToPreviousButtonStep();
     }
   }
-  function handleTouchStart(e) {
-    state.touchStartY = e.touches[0].clientY;
+  function _openNextLayer() {
+    if (!state.isPanelOpen) {
+      _openLayerWithContent("layer1", stepHasLayer1Content);
+      return;
+    }
+    if (state.panelStack.length === 1 && state.panelStack[0]?.type === "layer1") {
+      _openLayerWithContent("layer2", stepHasLayer2Content);
+    }
   }
-  function handleTouchEnd(e) {
-    state.touchEndY = e.changedTouches[0].clientY;
-    const now = Date.now();
-    const timeSinceLastChange = now - state.lastStepChangeTime;
-    if (timeSinceLastChange < STEP_COOLDOWN) {
-      return;
+  function _openLayerWithContent(type, hasContent) {
+    const step = getCurrentStepData();
+    const stepNumber = getCurrentStepNumber();
+    if (step && hasContent(step)) {
+      openPanel(type, stepNumber);
     }
-    if (state.scrollLockActive) {
-      return;
-    }
-    const swipeDistance = state.touchEndY - state.touchStartY;
-    if (swipeDistance < -state.touchThreshold) {
-      nextStep();
-    } else if (swipeDistance > state.touchThreshold) {
-      prevStep();
-    }
+  }
+  function _closeTopmostPanel(e) {
+    if (!state.isPanelOpen) return;
+    e.preventDefault();
+    closeTopPanel();
+  }
+  function scrollOpenPanel(delta) {
+    const top = state.panelStack[state.panelStack.length - 1];
+    if (!top) return;
+    const panel = document.getElementById(`panel-${top.type}`);
+    const body = panel?.querySelector(".offcanvas-body");
+    if (body) body.scrollBy({ top: delta, behavior: "smooth" });
   }
   function getCurrentStepNumber() {
     if (state.currentIndex < 0 || state.currentIndex >= state.steps.length) {
@@ -958,36 +6816,101 @@
     const steps = window.storyData?.steps || [];
     return steps.find((s) => s.step == stepNumber);
   }
-  function updateViewerInfo(stepNumber) {
+  function updateViewerInfo(stepIndex) {
+    const counter = document.getElementById("step-counter");
     const infoElement = document.getElementById("current-object-title");
-    if (infoElement) {
-      const stepTemplate = window.telarLang.stepNumber || "Step {{ number }}";
-      infoElement.textContent = stepTemplate.replace("{{ number }}", stepNumber);
+    if (!counter || !infoElement) return;
+    if (stepIndex < 0) {
+      counter.classList.add("d-none");
+      return;
     }
+    counter.classList.remove("d-none");
+    const total = (window.storyData?.steps || []).filter((s) => !s._metadata).length;
+    const stepTemplate = window.telarLang.stepNumber || "Step {{ number }}";
+    const display = stepTemplate.replace("{{ number }}", stepIndex + 1);
+    infoElement.textContent = total > 0 ? `${display} / ${total}` : display;
+  }
+
+  // assets/js/telar-story/ios-device.js
+  function isIOSDevice(userAgent = navigator.userAgent, maxTouchPoints = navigator.maxTouchPoints) {
+    if (/iPad|iPhone|iPod/.test(userAgent)) return true;
+    return /Macintosh/.test(userAgent) && maxTouchPoints > 1;
   }
 
   // assets/js/telar-story/main.js
+  if (typeof window !== "undefined") {
+    window.IiifViewer = IiifViewer;
+  }
   function initializeStory() {
-    const viewerConfig = window.telarConfig?.viewer_preloading || {};
-    state.config.maxViewerCards = Math.min(viewerConfig.max_viewer_cards || 10, 15);
-    state.config.preloadSteps = Math.min(viewerConfig.preload_steps || 6, state.config.maxViewerCards - 2);
-    state.config.loadingThreshold = viewerConfig.loading_threshold || 5;
-    state.config.minReadyViewers = Math.min(viewerConfig.min_ready_viewers || 3, state.config.preloadSteps);
-    state.scrollThreshold = window.innerHeight * 0.5;
-    state.touchThreshold = window.innerHeight * 0.2;
+    const viewerConfig = window.telarConfig.viewer_preloading;
+    state.config.maxViewerCards = Math.min(viewerConfig.max_viewer_cards, 15);
+    state.config.preloadSteps = Math.min(viewerConfig.preload_steps, state.config.maxViewerCards - 2);
+    state.config.loadingThreshold = viewerConfig.loading_threshold;
+    state.config.minReadyViewers = Math.min(viewerConfig.min_ready_viewers, state.config.preloadSteps);
     buildObjectsIndex();
     prefetchStoryManifests();
-    initializeFirstViewer();
-    state.isMobileViewport = window.innerWidth < 768;
-    const isEmbedMode = window.telarEmbed?.enabled || false;
-    if (isEmbedMode) {
-      initializeButtonNavigation("embed");
-    } else if (state.isMobileViewport) {
-      initializeButtonNavigation("mobile");
+    state.isEmbed = window.telarEmbed?.enabled || false;
+    const cardConfig = {
+      peekHeight: window.telarConfig?.cardPeekHeight ?? 1,
+      messiness: window.telarConfig?.cardMessiness ?? 20
+    };
+    initCardPool(window.storyData, cardConfig);
+    state.layoutMode = getLayoutMode();
+    onLayoutChange(() => {
+      const activeCard = document.querySelector(".text-card.is-active");
+      state.cardOverlayRect = activeCard ? activeCard.getBoundingClientRect() : null;
+    });
+    if (state.isEmbed) {
+      initializeButtonNavigation();
+      const stepCount = (window.storyData?.steps || []).filter((s) => !s._metadata).length;
+      initScrollEngine(stepCount);
+    } else if (state.layoutMode === "vertical") {
+      initializeButtonNavigation();
+    } else if (isIOSDevice()) {
+      initializeButtonNavigation();
     } else {
-      initializeStepController();
+      document.documentElement.dataset.navigation = "scroll";
+      const stepCount = (window.storyData?.steps || []).filter((s) => !s._metadata).length;
+      initScrollEngine(stepCount);
     }
     initializePanels();
+    applyDeepLinkOnLoad();
+    window.addEventListener("hashchange", handleHashChange);
+    const btnNav = document.getElementById("btn-nav-back");
+    if (btnNav) {
+      btnNav.classList.add("is-home");
+      const homeUrl = btnNav.dataset.homeUrl;
+      const homeText = btnNav.dataset.homeText;
+      const startText = btnNav.dataset.startText;
+      const textEl = btnNav.querySelector(".btn-nav-text");
+      state.onStepChange = (index2) => {
+        if (index2 < 0) {
+          btnNav.classList.remove("is-start");
+          btnNav.classList.add("is-home");
+          btnNav.href = homeUrl;
+          if (textEl) textEl.textContent = homeText;
+        } else {
+          btnNav.classList.remove("is-home");
+          btnNav.classList.add("is-start");
+          btnNav.removeAttribute("href");
+          if (textEl) textEl.textContent = startText;
+        }
+      };
+      state.onStepChange(state.currentIndex);
+      btnNav.addEventListener("click", (e) => {
+        if (btnNav.classList.contains("is-start")) {
+          e.preventDefault();
+          navigateToIntro();
+        }
+      });
+    }
+    document.querySelectorAll(".intro-toc-link[data-target-step]").forEach((link) => {
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        const step = parseInt(link.dataset.targetStep, 10);
+        if (step) navigateToStep(step);
+      });
+    });
     initializeScrollLock();
     initializeCredits();
   }
@@ -1002,13 +6925,12 @@
   });
   window.TelarStory = {
     state,
-    switchToObject,
-    animateViewerToPosition,
+    activateCard,
     openPanel,
     getManifestUrl,
     closeAllPanels,
-    createViewerCard,
-    getOrCreateViewerCard
+    getScrollEngineState,
+    navigateToStep
   };
 })();
 //# sourceMappingURL=telar-story.js.map

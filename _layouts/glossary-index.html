@@ -2,31 +2,72 @@
 layout: default
 ---
 
+{%- comment -%}
+  Glossary index — the A-to-Z listing of every glossary term defined on the site.
+  It renders the page's own prose first, then groups the `site.glossary` collection
+  into alphabetical sections: terms are bucketed by their first letter, the letter
+  headings are sorted, and the terms within each heading are sorted by title. Each
+  entry links through to its individual glossary page (see the glossary layout),
+  carrying the term's id and url so the on-page term-panel script can open it inline
+  rather than forcing a full navigation. Demo terms are tagged with a small badge so
+  sample content is visually distinguishable from a site's real glossary. When no
+  terms exist, an informational notice stands in. User-facing strings resolve through
+  the active language file via `lang`, falling back to English.
+
+  Entries are grouped by kind, the core kinds of _data/glossary_kinds.yml in
+  that file's order and then the site's own (see glossary-kinds.html),
+  each kind under its own heading with its letters beneath it. A glossary whose
+  entries are all of the default kind has no kind headings, and its letters are
+  the page's second-level headings.
+{%- endcomment -%}
+
+{% if site.telar_language and site.data.languages[site.telar_language] %}
+  {% assign lang = site.data.languages[site.telar_language] %}
+{% else %}
+  {% assign lang = site.data.languages['en'] %}
+{% endif %}
+
 <div class="container my-5">
   <div class="row">
     <div class="col-lg-10 mx-auto">
-      <h1>{{ page.title }}</h1>
+      <h1>{{ lang.navigation.glossary | default: page.title }}</h1>
       <article class="page-content">
         {{ content }}
       </article>
       {% if site.glossary.size > 0 %}
+      {% include glossary-kinds-used.html %}
+      {% assign sectioned = true %}
+      {% if glossary_kinds_used.size == 1 and glossary_kinds_used.first.id == glossary_default_kind.id %}
+        {% assign sectioned = false %}
+      {% endif %}
       <div class="glossary-list">
-        {% assign glossary_by_letter = site.glossary | group_by_exp: "item", "item.title | slice: 0 | upcase" | sort: "name" %}
+        {% for kind in glossary_kinds_used %}
+        {% include glossary-kind-entries.html kind=kind %}
+        {% if sectioned %}
+        {% include glossary-kind-text.html kind=kind part="heading" lang=lang %}
+        <section class="glossary-section" data-glossary-kind="{{ kind.id | escape }}">
+        <h2 class="glossary-section-heading">{{ glossary_kind_text }}</h2>
+        {% endif %}
+        {% assign glossary_by_letter = glossary_kind_entries | group_by_exp: "item", "item.title | slice: 0 | upcase" | sort: "name" %}
 
         {% for letter_group in glossary_by_letter %}
-        <h2 class="glossary-letter">{{ letter_group.name }}</h2>
+        {% if sectioned %}<h3 class="glossary-letter">{{ letter_group.name }}</h3>{% else %}<h2 class="glossary-letter">{{ letter_group.name }}</h2>{% endif %}
 
         {% assign sorted_terms = letter_group.items | sort: "title" %}
         {% for term in sorted_terms %}
         <div class="glossary-term">
-          <a href="#" class="glossary-term-link" data-term-id="{{ term.term_id }}" data-term-url="{{ term.url | relative_url }}">{{ term.title }}</a>
+          <a href="#" class="glossary-term-link" data-term-id="{{ term.term_id }}" data-term-url="{{ term.url | relative_url }}">{{ term.title }}</a>{% if term.demo %}<span class="demo-badge-inline">{{ lang.demo.badge }}</span>{% endif %}
         </div>
         {% endfor %}
+        {% endfor %}
+        {% if sectioned %}
+        </section>
+        {% endif %}
         {% endfor %}
       </div>
       {% else %}
       <div class="alert alert-info">
-        <p class="mb-0">No glossary terms available yet. Add glossary files to the <code>_glossary/</code> directory to populate the glossary.</p>
+        <p class="mb-0">{{ lang.empty_states.no_glossary }}</p>
       </div>
       {% endif %}
     </div>

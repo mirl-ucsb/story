@@ -1,0 +1,853 @@
+/**
+ * Telar Story -- Video Card
+ *
+ * This module manages the lifecycle of video players embedded in story
+ * steps. Telar supports three video providers — YouTube, Vimeo, and
+ * Google Drive — each with its own player API and embed mechanism.
+ * Video cards follow the same DOM-at-init, visibility-via-transforms
+ * pattern as IIIF cards but use iframe embeds instead of IIIF viewers.
+ *
+ * Layout — the player is placed by video-layout.js's arithmetic. On a
+ * horizontal layout it goes beside the side text card, or above the card when
+ * media-arrangement.js has placed the scene's cards below the player and
+ * written so on the plate; on a vertical layout it is stacked above the
+ * bottom card. card-pool.js re-places the players through `layoutVideoPlate`
+ * after every geometry pass, since the arrangement depends on the cards'
+ * heights and those are measured there. When a player learns its video's
+ * aspect, the plate is sent `telar:media-aspect`, because the arrangement is
+ * compared at that aspect.
+ *
+ * Player pool — at most three video players exist at once (the current
+ * card, plus one or two preloaded ahead). When a fourth is needed, the
+ * player farthest from the current scene by index distance is destroyed.
+ * This keeps memory use bounded without destroying players the user is
+ * likely to scroll back to.
+ *
+ * Clip control — each step can specify a clip_start and clip_end time in
+ * seconds. YouTube clips are enforced by a requestAnimationFrame polling
+ * loop (the YouTube ENDED event is unreliable for mid-video clips),
+ * while Vimeo uses its timeupdate event. A semi-transparent dim overlay
+ * fades in over the video when the clip reaches its end. The loop flag
+ * restarts the clip from clip_start when clip_end is reached.
+ *
+ * Autoplay — on desktop, the module attempts autoplay and catches the
+ * browser's NotAllowedError if it fails. YouTube is checked by looking
+ * for a PLAYING state within two seconds of the player's onReady event;
+ * Vimeo uses player.play().catch(). When autoplay is blocked, a frosted
+ * glass play overlay appears over the video. Tapping it sets a session
+ * flag (state.hasUserInteracted) that enables autoplay for all subsequent
+ * media cards. On mobile and in embeds, the overlay always appears.
+ * Google Drive embeds have no player API, so they receive no clip control
+ * or autoplay detection.
+ *
+ * @version v1.8.0
+ */
+
+import { state } from './state.js';
+import { readBelow, readTopBand } from './media-arrangement.js';
+
+// Layout and embed arithmetic, in video-layout.js.
+import {
+  computeVideoLayout, computeVideoLetterboxRegion,
+  buildYouTubeEmbedConfig, buildGDriveEmbedUrl,
+} from './video-layout.js';
+
+// ── Module-level player pool ──────────────────────────────────────────────────
+
+/** Active video player wrappers. Capped at MAX_VIDEO_PLAYERS. */
+const _videoPlayers = [];
+
+/** Maximum concurrent video player instances. */
+const MAX_VIDEO_PLAYERS = 3;
+
+// ── YouTube API loader ────────────────────────────────────────────────────────
+
+/**
+ * Load the YouTube IFrame API once, returning a Promise that resolves when
+ * the API is ready. Subsequent calls return the same Promise.
+ *
+ * Uses window._ytApiPromise as a once-guard so the script tag is only
+ * appended once even if loadYouTubeAPI() is called multiple times.
+ *
+ * @returns {Promise<void>}
+ */
+export function loadYouTubeAPI() {
+  if (window._ytApiPromise) return window._ytApiPromise;
+
+  window._ytApiPromise = new Promise((resolve) => {
+    if (window.YT && window.YT.Player) {
+      resolve();
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://www.youtube.com/iframe_api';
+    script.async = true;
+    document.head.appendChild(script);
+
+    // YouTube calls this global when the API is ready
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = function () {
+      if (typeof prev === 'function') prev();
+      resolve();
+    };
+  });
+
+  return window._ytApiPromise;
+}
+
+/**
+ * Detect a YouTube video's true aspect ratio from its maxres thumbnail.
+ *
+ * The YouTube IFrame API exposes no client-readable pixel dimensions, and the
+ * oEmbed endpoint returns a placeholder size with no CORS header (so fetch is
+ * blocked). The maxresdefault thumbnail is the only signal that reflects the
+ * real source aspect — but it 404s for old/low-res uploads, and the smaller
+ * thumbnails are letterbox-padded (hqdefault/default to 4:3) or cropped
+ * (mqdefault to 16:9), so they cannot be trusted. We therefore probe only
+ * maxresdefault via an Image (no CORS issue for naturalWidth/Height) and
+ * resolve null when it is missing, leaving the caller to fall back to a dark
+ * letterbox frame.
+ *
+ * @param {string} videoId - YouTube video ID
+ * @returns {Promise<number|null>} aspect ratio (w/h), or null if undetectable
+ */
+export function detectYouTubeAspect(videoId) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      // YouTube serves a tiny grey placeholder (~120x90) when no real maxres
+      // thumbnail exists; require a plausible size before trusting it.
+      if (img.naturalWidth >= 320 && img.naturalHeight >= 180) {
+        resolve(img.naturalWidth / img.naturalHeight);
+      } else {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
+  });
+}
+
+/**
+ * Load the Vimeo Player API once from CDN, returning a Promise that resolves
+ * when window.Vimeo.Player is available. Mirrors loadYouTubeAPI() pattern.
+ *
+ * @returns {Promise<void>}
+ */
+export function loadVimeoAPI() {
+  if (window._vimeoApiPromise) return window._vimeoApiPromise;
+
+  window._vimeoApiPromise = new Promise((resolve, reject) => {
+    if (window.Vimeo && window.Vimeo.Player) {
+      resolve();
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://player.vimeo.com/api/player.js';
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Vimeo Player API'));
+    document.head.appendChild(script);
+  });
+
+  return window._vimeoApiPromise;
+}
+
+// ── DOM helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Apply a semi-transparent dim overlay over the video iframe at clip_end.
+ * Creates a div.clip-end-overlay absolutely positioned over the iframe.
+ * Fades in over 300ms.
+ *
+ * @param {HTMLElement} plateEl - The video plate element
+ */
+export function applyClipEndDim(plateEl) {
+  let overlay = plateEl.querySelector('.clip-end-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = 'clip-end-overlay';
+    plateEl.appendChild(overlay);
+  }
+  // Force reflow so transition fires
+  void overlay.offsetHeight;
+  overlay.classList.add('visible');
+}
+
+/**
+ * Remove the clip-end dim overlay from a plate.
+ *
+ * @param {HTMLElement} plateEl - The video plate element
+ */
+export function removeClipEndDim(plateEl) {
+  const overlay = plateEl.querySelector('.clip-end-overlay');
+  if (overlay) {
+    overlay.classList.remove('visible');
+  }
+}
+
+// ── Player lifecycle ──────────────────────────────────────────────────────────
+
+/**
+ * Create a video player inside the given plate element.
+ *
+ * Returns a player wrapper object { type, element, player, sceneIndex, destroy() }.
+ * The wrapper is also pushed into the module-level _videoPlayers pool.
+ *
+ * Pool management: when the pool exceeds MAX_VIDEO_PLAYERS, the farthest player
+ * by scene distance is evicted.
+ *
+ * @param {HTMLElement} plateEl - The viewer plate to host the player
+ * @param {'youtube'|'vimeo'|'google-drive'} cardType
+ * @param {string} videoId - Provider-specific video ID
+ * @param {Object} options
+ * @param {number} [options.clipStart=0]
+ * @param {number} [options.clipEnd] - If set, pause at this time
+ * @param {boolean} [options.loop=false]
+ * @param {Function} [options.onPlay] - Called when playback starts
+ * @param {Function} [options.onTimeUpdate] - Called each frame with (currentTime, duration)
+ * @param {Function} [options.onEnded] - Called when clip ends (clipEnd reached)
+ * @param {Function} [options.onAutoplayBlocked] - Called when autoplay is blocked
+ * @param {number} [options.sceneIndex=0] - Scene index (used for pool eviction ordering)
+ * @returns {Object} Player wrapper
+ */
+export function createVideoPlayer(plateEl, cardType, videoId, options = {}) {
+  const {
+    clipStart = 0,
+    clipEnd,
+    loop = false,
+    onPlay = () => {},
+    onTimeUpdate = () => {},
+    onEnded = () => {},
+    onAutoplayBlocked = () => {},
+    sceneIndex = 0,
+    sourceUrl = '',
+  } = options;
+
+  let wrapper;
+
+  if (cardType === 'youtube') {
+    wrapper = _createYouTubePlayer(plateEl, videoId, {
+      clipStart, clipEnd, loop, onPlay, onTimeUpdate, onEnded, onAutoplayBlocked, sceneIndex,
+    });
+  } else if (cardType === 'vimeo') {
+    wrapper = _createVimeoPlayer(plateEl, videoId, {
+      clipStart, clipEnd, loop, onPlay, onTimeUpdate, onEnded, onAutoplayBlocked, sceneIndex, sourceUrl,
+    });
+  } else if (cardType === 'google-drive') {
+    wrapper = _createGDriveEmbed(plateEl, videoId, sceneIndex);
+  } else {
+    console.error('createVideoPlayer: unknown cardType', cardType);
+    return null;
+  }
+
+  _videoPlayers.push(wrapper);
+
+  // Enforce pool size limit
+  _enforcePoolLimit(sceneIndex);
+
+  // Apply layout immediately so the iframe is positioned correctly
+  // during scroll-driven slide-up (before activateVideoCard is called)
+  _applyVideoLayout(plateEl);
+
+  return wrapper;
+}
+
+/**
+ * Destroy a video player wrapper, releasing its resources.
+ *
+ * @param {Object} wrapper - Player wrapper returned by createVideoPlayer
+ */
+export function destroyVideoPlayer(wrapper) {
+  if (!wrapper) return;
+
+  wrapper._destroyed = true;
+
+  try {
+    if (wrapper.type === 'youtube' && wrapper.player) {
+      if (wrapper._rafId) cancelAnimationFrame(wrapper._rafId);
+      if (wrapper._autoplayTimeout) clearTimeout(wrapper._autoplayTimeout);
+      wrapper.player.destroy();
+    } else if (wrapper.type === 'vimeo' && wrapper.player) {
+      wrapper.player.destroy();
+    } else if (wrapper.type === 'google-drive') {
+      const iframe = wrapper.element.querySelector('iframe.video-iframe');
+      if (iframe) iframe.remove();
+    }
+  } catch (e) {
+    console.warn('destroyVideoPlayer: error during destroy', e);
+  }
+
+  // Remove from pool
+  const idx = _videoPlayers.indexOf(wrapper);
+  if (idx !== -1) _videoPlayers.splice(idx, 1);
+}
+
+/**
+ * Show the frosted glass pill play overlay on a video plate.
+ *
+ * Creates the overlay on first call; subsequent calls just make it visible.
+ * Overlay click sets state.hasUserInteracted = true and resumes playback.
+ *
+ * @param {HTMLElement} plateEl - The video plate element
+ */
+function _showVideoPlayOverlay(plateEl) {
+  const existing = plateEl.querySelector('.video-play-overlay');
+  if (existing) {
+    existing.style.display = 'flex';
+    return;
+  }
+
+  const overlayEl = document.createElement('div');
+  overlayEl.className = 'video-play-overlay';
+  overlayEl.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:1;';
+
+  // Dynamic aria-label using object alt_text/title
+  const _vObj = state.objectsIndex[plateEl.dataset.object] || {};
+  const _vAlt = _vObj.alt_text || _vObj.title || 'video';
+  const overlayBtn = document.createElement('button');
+  overlayBtn.setAttribute('aria-label', `Play ${_vAlt}`);
+  overlayBtn.type = 'button';
+  // Frosted glass pill variant
+  overlayBtn.style.cssText = 'min-height:44px;padding:0.5rem 1.25rem;border-radius:20px;background:rgba(255,255,255,0.6);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);border:none;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,0.2);display:flex;align-items:center;gap:8px;color:#333;font-family:var(--font-body);font-size:0.9rem;';
+  overlayBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="var(--color-link)" xmlns="http://www.w3.org/2000/svg"><polygon points="5,3 19,12 5,21"/></svg><span>Play</span>';
+  overlayEl.appendChild(overlayBtn);
+  plateEl.appendChild(overlayEl);
+
+  overlayBtn.addEventListener('click', () => {
+    state.hasUserInteracted = true; // unlock all subsequent media
+    overlayEl.style.display = 'none';
+    // Resume video playback
+    const wrapper = _getWrapperForPlate(plateEl);
+    if (wrapper && wrapper.player) {
+      try {
+        if (wrapper.type === 'youtube') {
+          wrapper.player.playVideo();
+        } else if (wrapper.type === 'vimeo') {
+          wrapper.player.play();
+        }
+      } catch (e) {
+        // Ignore — player may not be ready
+      }
+    }
+  });
+}
+
+/** @public Exposed so card-pool.js can call it from the onAutoplayBlocked callback. */
+export { _showVideoPlayOverlay as showVideoPlayOverlay };
+
+/**
+ * Activate a video card plate: position it using auto-layout and reveal it.
+ *
+ * @param {HTMLElement} plateEl - The video plate element
+ * @param {number} sceneIndex - Scene index (used for layout and z-index)
+ */
+export function activateVideoCard(plateEl, sceneIndex) {
+  // Bring plate into view
+  plateEl.style.transform = 'translateY(0)';
+  plateEl.classList.add('is-active');
+
+  // Apply auto-layout
+  _applyVideoLayout(plateEl);
+
+  // Autoplay policy — always manual on vertical layout and embed
+  if (state.layoutMode === 'vertical' || state.isEmbed) {
+    if (!state.hasUserInteracted) {
+      _showVideoPlayOverlay(plateEl);
+      return;
+    }
+  }
+
+  // Trigger playback — autoplay is off so we play on activation
+  const wrapper = _getWrapperForPlate(plateEl);
+  if (wrapper) {
+    try {
+      if (wrapper.type === 'youtube' && wrapper.player) {
+        wrapper.player.playVideo();
+      } else if (wrapper.type === 'vimeo' && wrapper.player) {
+        wrapper.player.play().catch(() => {});
+      }
+    } catch (e) {
+      // Ignore — player may not be ready yet
+    }
+  }
+}
+
+/**
+ * Deactivate a video card plate: pause playback and hide the plate.
+ *
+ * @param {HTMLElement} plateEl - The video plate element
+ */
+export function deactivateVideoCard(plateEl) {
+  plateEl.classList.remove('is-active');
+  // Leaves the transform alone — the caller decides positioning
+  // (forward nav: plate stays put, covered by incoming plate;
+  //  backward nav: caller sets translateY(100%) to slide it away)
+
+  // Pause the player if one exists
+  const wrapper = _getWrapperForPlate(plateEl);
+  if (!wrapper) return;
+
+  try {
+    if (wrapper.type === 'youtube' && wrapper.player) {
+      wrapper.player.pauseVideo();
+    } else if (wrapper.type === 'vimeo' && wrapper.player) {
+      wrapper.player.pause();
+    }
+    // Google Drive: no API available
+  } catch (e) {
+    // Ignore — player may have been destroyed
+  }
+}
+
+/**
+ * Update clip parameters for an existing video player and seek to the new
+ * clip start. Used when navigating between steps on the same video object
+ * (same scene, different clip range).
+ *
+ * @param {HTMLElement} plateEl - The video plate element
+ * @param {number} clipStart - New clip start in seconds
+ * @param {number} clipEnd - New clip end in seconds (0 = no restriction)
+ * @param {boolean} loop - Whether the new clip should loop
+ */
+export function updateVideoClip(plateEl, clipStart, clipEnd, loop) {
+  const wrapper = _getWrapperForPlate(plateEl);
+  if (!wrapper) return;
+
+  // Same clip params — let the video keep playing uninterrupted
+  if (wrapper.clipStart === clipStart && wrapper.clipEnd === clipEnd && wrapper.loop === loop) {
+    return;
+  }
+
+  // Update wrapper state (polling reads from these)
+  wrapper.clipStart = clipStart;
+  wrapper.clipEnd = clipEnd;
+  wrapper.loop = loop;
+
+  // Update plate dataset for consistency
+  plateEl.dataset.clipStart = String(clipStart);
+  plateEl.dataset.clipEnd = String(clipEnd);
+  plateEl.dataset.loop = String(loop);
+
+  // Remove any clip-end dim from previous clip
+  removeClipEndDim(plateEl);
+
+  // Seek to new clip start
+  try {
+    if (wrapper.type === 'youtube' && wrapper.player) {
+      wrapper.player.seekTo(clipStart || 0, true);
+      // Restart polling if it was stopped (previous clip ended without loop)
+      if (!wrapper._rafId) {
+        wrapper.player.playVideo();
+      }
+    } else if (wrapper.type === 'vimeo' && wrapper.player) {
+      wrapper.player.setCurrentTime(clipStart || 0.01).catch(() => {});
+      // Resume if paused from previous clip end
+      wrapper.player.play().catch(() => {});
+    }
+  } catch (e) {
+    // Player may not be ready yet
+  }
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Create a YouTube player wrapper.
+ */
+function _createYouTubePlayer(plateEl, videoId, opts) {
+  const { clipStart, clipEnd, loop, onPlay, onTimeUpdate, onEnded, onAutoplayBlocked, sceneIndex } = opts;
+
+  const container = document.createElement('div');
+  container.className = 'video-iframe';
+  plateEl.appendChild(container);
+
+  // Detect the real aspect ratio so the box fills cleanly (like Vimeo). If the
+  // maxres thumbnail is missing (old videos), fall back to the dark letterbox
+  // frame. Async; re-applies the layout once it resolves.
+  detectYouTubeAspect(videoId).then((aspect) => {
+    if (wrapper._destroyed) return;
+    if (aspect) {
+      plateEl.dataset.aspectRatio = String(aspect);
+      delete plateEl.dataset.videoLetterbox;
+    } else {
+      plateEl.dataset.videoLetterbox = 'true';
+    }
+    _aspectLearned(plateEl);
+  });
+
+  const wrapper = {
+    type: 'youtube',
+    element: plateEl,
+    player: null,
+    sceneIndex,
+    clipStart,
+    clipEnd,
+    loop,
+    _rafId: null,
+    _autoplayTimeout: null,
+    _playReceived: false,
+    _destroyed: false,
+    destroy() { destroyVideoPlayer(this); },
+  };
+
+  loadYouTubeAPI().then(() => {
+    // The pool may have evicted this wrapper while the API was loading. Build
+    // the player anyway and it answers to nothing: every control path runs
+    // through _getWrapperForPlate, which no longer finds it, so the video
+    // cannot be paused when the reader leaves the step.
+    if (wrapper._destroyed) return;
+    const cfg = buildYouTubeEmbedConfig(videoId, clipStart, clipEnd, loop);
+
+    wrapper.player = new window.YT.Player(container, {
+      videoId: cfg.videoId,
+      playerVars: cfg.playerVars,
+      events: {
+        onReady: (event) => {
+          // Autoplay block detection: if PLAYING state not received within 2s, assume blocked
+          wrapper._autoplayTimeout = setTimeout(() => {
+            if (!wrapper._playReceived) {
+              onAutoplayBlocked();
+            }
+          }, 2000);
+        },
+        onStateChange: (event) => {
+          if (event.data === window.YT.PlayerState.PLAYING) {
+            wrapper._playReceived = true;
+            if (wrapper._autoplayTimeout) {
+              clearTimeout(wrapper._autoplayTimeout);
+              wrapper._autoplayTimeout = null;
+            }
+            onPlay();
+
+            // Start rAF polling for clip_end and timeUpdate
+            if (wrapper.clipEnd) {
+              _startYouTubePolling(wrapper, onTimeUpdate, onEnded);
+            }
+          } else if (event.data === window.YT.PlayerState.PAUSED ||
+                     event.data === window.YT.PlayerState.ENDED) {
+            if (wrapper._rafId) {
+              cancelAnimationFrame(wrapper._rafId);
+              wrapper._rafId = null;
+            }
+          }
+        },
+      },
+    });
+  });
+
+  return wrapper;
+}
+
+/**
+ * Start rAF polling loop for YouTube clip_end enforcement and time updates.
+ * We use polling (not the ENDED state) because the YouTube end event is
+ * unreliable for clip_end mid-video.
+ *
+ * Reads clipStart/clipEnd/loop from wrapper so values stay current when
+ * clip parameters change mid-scene (same-object multi-step navigation).
+ */
+function _startYouTubePolling(wrapper, onTimeUpdate, onEnded) {
+  if (wrapper._rafId) cancelAnimationFrame(wrapper._rafId);
+
+  function poll() {
+    if (!wrapper.player) return;
+    try {
+      const currentTime = wrapper.player.getCurrentTime();
+      const duration = wrapper.player.getDuration();
+      onTimeUpdate(currentTime, duration);
+
+      if (wrapper.clipEnd && currentTime >= wrapper.clipEnd) {
+        if (wrapper.loop) {
+          // Segment loop: seek back to clipStart instead of pausing
+          wrapper.player.seekTo(wrapper.clipStart || 0, true);
+        } else {
+          wrapper.player.pauseVideo();
+          onEnded();
+          return; // stop polling
+        }
+      }
+    } catch (e) {
+      return; // player destroyed
+    }
+    wrapper._rafId = requestAnimationFrame(poll);
+  }
+
+  wrapper._rafId = requestAnimationFrame(poll);
+}
+
+/**
+ * Create a Vimeo player wrapper.
+ */
+function _createVimeoPlayer(plateEl, videoId, opts) {
+  const { clipStart, clipEnd, loop, onPlay, onTimeUpdate, onEnded, onAutoplayBlocked, sceneIndex, sourceUrl } = opts;
+
+  const container = document.createElement('div');
+  container.className = 'video-iframe';
+  plateEl.appendChild(container);
+
+  const wrapper = {
+    type: 'vimeo',
+    element: plateEl,
+    player: null,
+    sceneIndex,
+    clipStart,
+    clipEnd,
+    loop,
+    _destroyed: false,
+    destroy() { destroyVideoPlayer(this); },
+  };
+
+  // Load Vimeo API from CDN on demand, then create the player
+  loadVimeoAPI().then(() => {
+    // Evicted while the CDN load was in flight — see the note in
+    // _createYouTubePlayer.
+    if (wrapper._destroyed) return;
+    // For unlisted videos, pass the full player URL (contains the privacy
+    // hash as ?h= parameter). For public videos, pass the numeric ID.
+    const playerOpts = {
+      autoplay: false,
+      loop: false,
+      controls: true,
+    };
+    const hashMatch = sourceUrl && sourceUrl.match(/vimeo\.com\/\d+\/([a-f0-9]+)/i);
+    if (hashMatch) {
+      // Unlisted: construct the player URL with hash
+      playerOpts.url = `https://vimeo.com/${videoId}/${hashMatch[1]}`;
+    } else {
+      playerOpts.id = parseInt(videoId, 10) || videoId;
+    }
+
+    const vimeoPlayer = new window.Vimeo.Player(container, playerOpts);
+
+    wrapper.player = vimeoPlayer;
+
+    // On ready: query real dimensions for layout, then seek to clip start
+    vimeoPlayer.ready().then(() => {
+      return Promise.all([
+        vimeoPlayer.getVideoWidth(),
+        vimeoPlayer.getVideoHeight(),
+      ]).then(([w, h]) => {
+        if (w && h) {
+          plateEl.dataset.aspectRatio = String(w / h);
+          _aspectLearned(plateEl);
+        }
+      });
+    }).then(() => {
+      if (clipStart) {
+        vimeoPlayer.setCurrentTime(clipStart).catch(() => {});
+      }
+    });
+
+    vimeoPlayer.on('play', () => {
+      onPlay();
+    });
+
+    vimeoPlayer.on('timeupdate', ({ seconds, duration }) => {
+      onTimeUpdate(seconds, duration);
+      if (wrapper.clipEnd && seconds >= wrapper.clipEnd) {
+        if (wrapper.loop) {
+          // Segment loop: seek back to clipStart
+          vimeoPlayer.setCurrentTime(wrapper.clipStart || 0.01).catch(() => {});
+        } else {
+          vimeoPlayer.pause().catch(() => {});
+          onEnded();
+        }
+      }
+    });
+
+    // Detect autoplay block
+    vimeoPlayer.play().catch(err => {
+      if (err && (err.name === 'NotAllowedError' || err.name === 'PasswordError')) {
+        onAutoplayBlocked();
+      }
+    });
+  }).catch(err => {
+    console.error('Failed to load Vimeo API:', err);
+  });
+
+  return wrapper;
+}
+
+/**
+ * Create a Google Drive static iframe embed.
+ * No API available for clip control or playback events.
+ */
+function _createGDriveEmbed(plateEl, videoId, sceneIndex) {
+  const iframe = document.createElement('iframe');
+  iframe.className = 'video-iframe';
+  iframe.src = buildGDriveEmbedUrl(videoId);
+  iframe.allow = 'autoplay';
+  iframe.allowFullscreen = true;
+  iframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px';
+
+  // Google Drive exposes no dimensions API, so the true aspect is unknowable.
+  // Use the dark letterbox frame: Drive's preview player already letterboxes
+  // the video centred on black, so filling the region reads as a real player.
+  // Set before the caller's _applyVideoLayout so the region is applied at once.
+  plateEl.dataset.videoLetterbox = 'true';
+
+  plateEl.appendChild(iframe);
+
+  return {
+    type: 'google-drive',
+    element: plateEl,
+    player: null,
+    sceneIndex,
+    _destroyed: false,
+    destroy() { destroyVideoPlayer(this); },
+  };
+}
+
+/**
+ * Enforce the player pool size limit.
+ * Evicts the farthest player by scene distance when cap is exceeded.
+ *
+ * @param {number} currentScene - The currently active scene index
+ */
+function _enforcePoolLimit(currentScene) {
+  while (_videoPlayers.length > MAX_VIDEO_PLAYERS) {
+    let farthestIdx = 0;
+    let maxDist = -1;
+    for (let i = 0; i < _videoPlayers.length; i++) {
+      const dist = Math.abs(_videoPlayers[i].sceneIndex - currentScene);
+      if (dist > maxDist) {
+        maxDist = dist;
+        farthestIdx = i;
+      }
+    }
+    const evicted = _videoPlayers.splice(farthestIdx, 1)[0];
+    _evictPlayer(evicted);
+  }
+}
+
+/**
+ * Tear down a wrapper's player the way its provider needs.
+ *
+ * YouTube also has a polling frame and an autoplay check to cancel; Google
+ * Drive has no player API, so its iframe is removed. May throw, which the
+ * caller catches.
+ */
+function _destroyProviderPlayer(wrapper) {
+  if (wrapper.type === 'youtube' && wrapper.player) {
+    if (wrapper._rafId) cancelAnimationFrame(wrapper._rafId);
+    if (wrapper._autoplayTimeout) clearTimeout(wrapper._autoplayTimeout);
+    wrapper.player.destroy();
+  } else if (wrapper.type === 'vimeo' && wrapper.player) {
+    wrapper.player.destroy();
+  } else if (wrapper.type === 'google-drive') {
+    const iframe = wrapper.element.querySelector('iframe.video-iframe');
+    if (iframe) iframe.remove();
+  }
+}
+
+/**
+ * Evict a player without removing it from the _videoPlayers array
+ * (used during pool enforcement where the splice already handles removal).
+ */
+function _evictPlayer(wrapper) {
+  // Raised before the teardown, so a build still in flight bails instead of
+  // finishing into a plate this wrapper no longer speaks for.
+  wrapper._destroyed = true;
+
+  try {
+    _destroyProviderPlayer(wrapper);
+  } catch (e) {
+    console.warn('_evictPlayer: error during evict', e);
+  }
+
+  // Leave the plate empty, so re-entering the scene builds one player rather
+  // than appending a second container beside the first. What each provider's
+  // teardown removes differs — YouTube's destroy() takes the iframe carrying
+  // the class, Vimeo's leaves the container div that holds it — so the plate
+  // is cleared here rather than relied on above. IiifPlate.unload keeps the
+  // same contract for .viewer-instance.
+  wrapper.element?.querySelector('.video-iframe')?.remove();
+}
+
+/**
+ * Find the player wrapper for a given plate element.
+ *
+ * @param {HTMLElement} plateEl
+ * @returns {Object|null}
+ */
+function _getWrapperForPlate(plateEl) {
+  return _videoPlayers.find(w => w.element === plateEl) || null;
+}
+
+/**
+ * Whether this plate still has a player in the pool.
+ *
+ * Counterpart of audio-card.js's `hasAudioPlayer`, and for the same reason:
+ * the pool is capped, and eviction destroys the provider's player while
+ * leaving the `.video-iframe` container in place, so a caller testing the DOM
+ * sees a container and declines to rebuild a plate that holds nothing.
+ *
+ * @param {HTMLElement} plateEl
+ * @returns {boolean}
+ */
+export function hasVideoPlayer(plateEl) {
+  const wrapper = _getWrapperForPlate(plateEl);
+  return Boolean(wrapper) && !wrapper._destroyed;
+}
+
+/**
+ * Place a video plate's player for its scene's arrangement.
+ *
+ * Positions the video iframe within the plate. The text card is positioned by
+ * card-pool.js / media-arrangement.js and the stylesheet, not here —
+ * `computeVideoLayout`'s `card`/`padding` slots are intentionally unused by
+ * this function.
+ *
+ * @param {HTMLElement} plateEl - The video plate element
+ */
+function _applyVideoLayout(plateEl) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+
+  const videoEl = plateEl.querySelector('.video-iframe');
+  if (!videoEl) return;
+  const below = readBelow(plateEl);
+  const topBand = readTopBand(plateEl);
+
+  // Unknown-aspect path: when the true aspect ratio could not be determined
+  // (old YouTube videos without a maxres thumbnail; all Google Drive embeds),
+  // fill the whole available region on a dark frame and let the provider's
+  // player letterbox the video itself, instead of guessing an aspect ratio.
+  if (plateEl.dataset.videoLetterbox === 'true') {
+    const region = computeVideoLetterboxRegion(W, H, below, topBand);
+    videoEl.classList.add('video-iframe--letterbox');
+    videoEl.style.position = 'absolute';
+    videoEl.style.left = `${region.left}px`;
+    videoEl.style.top = `${region.top}px`;
+    videoEl.style.width = `${region.width}px`;
+    videoEl.style.height = `${region.height}px`;
+    return;
+  }
+
+  // Known-aspect path: size the box to the video's real aspect ratio so it
+  // fills with no letterboxing (Vimeo always; YouTube when maxres detection
+  // succeeded). Default 16:9 only as a last resort.
+  videoEl.classList.remove('video-iframe--letterbox');
+  const aspectRatio = parseFloat(plateEl.dataset.aspectRatio) || 16 / 9;
+  const layout = computeVideoLayout(W, H, aspectRatio, below, topBand);
+  videoEl.style.position = 'absolute';
+  videoEl.style.left = `${layout.video.left}px`;
+  videoEl.style.top = `${layout.video.top}px`;
+  videoEl.style.width = `${layout.video.width}px`;
+  videoEl.style.height = `${layout.video.height}px`;
+}
+
+/**
+ * Re-place a plate's player once its video's aspect is known, and tell the
+ * card stack, which compares the arrangement at that aspect.
+ */
+function _aspectLearned(plateEl) {
+  _applyVideoLayout(plateEl);
+  plateEl.dispatchEvent(new CustomEvent('telar:media-aspect'));
+}
+
+/** @public card-pool.js re-places the players through this after a geometry pass. */
+export { _applyVideoLayout as layoutVideoPlate };

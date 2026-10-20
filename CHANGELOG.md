@@ -2,6 +2,515 @@
 
 All notable changes to Telar will be documented in this file.
 
+## [Unreleased]
+
+## [1.8.1] - 2026-10-09
+
+Story navigation and warnings patch. Fixes three ways a story could leave cards or images out of place, a valid IIIF manifest reported as invalid, and two details of demo content, and adds a setting that keeps build warnings off the published site.
+
+### Added
+
+- **Hide build warnings.** `hide_warnings` under `development-features` in `_config.yml` keeps build warnings off the published site: those on the home page, the objects page and object pages, a story's warnings, and the IIIF address banner. A link to a missing glossary entry shows its text without the warning marker. The build log still lists every warning. Off by default.
+
+### Fixed
+
+- **Back to Start.** Returning to the intro with Back to Start left the current step's card, and in some stories its image, on screen over the intro.
+- **Fast arrow keys.** Pressing an arrow key several times quickly could leave cards and images stopped part-way across the screen.
+- **Camera between two details.** Scrolling between two steps that zoom into details near opposite edges of an image moved the camera into one edge and along it, instead of straight across.
+- **IIIF manifests served as generic files.** A valid manifest whose server labels it `application/octet-stream`, as some object stores do, showed "Image Viewer Unavailable" on its object page although the viewer loaded it, and its title and description were not filled in from it.
+- **Demo story sections.** A demo story that lists its sections, such as Colonial Landscapes, now shows them on its intro card.
+- **Demo glossary after turning demo content off.** On a site built on your own computer, the demo glossary entries stayed after demo content was turned off. The next build now removes them.
+
+### Notes
+
+- Migration script `scripts/migrations/v180_to_v181.py` upgrades automatically from v1.8.0, and chains through from earlier versions. No manual steps.
+
+## [1.8.0] - 2026-10-04
+
+Story motion and glossary kinds release. This release changes how a story reads. Moving from one step to the next is now one motion, with text cards that scroll through as the image moves; each card takes the size its answer and the window need, and each answer is held to what its card can show. Glossary entries can now be key terms, primary sources, people or entities, or places, and an entry can sit beside the text as a callout. Links can open a page of a multi-page object or a glossary entry, and the address bar moves the story. The release also fixes what a site could publish wrong without its owner being able to see it: self-hosted images missing after a quiet week, maths broken everywhere but a panel, a carousel image with an unresolved address, and a private story published in the clear because its column was spelled in the masculine (in Spanish-language sites). An upgrade now reports what it did, in the site's language, to the reader each step is for, and a file missing from a release no longer stalls it.
+
+### Added
+
+- **Stories move in one motion, with text cards that scroll through.** Moving from one step to the next is now one motion: the scroll, the camera, the text cards and the plates move together on one curve, over a duration that grows with how far the camera travels, from 1.2 seconds for a small move to 3 for the longest, and the camera zooms evenly. A scroll that stops between two steps is carried to the nearer one, so the reader never rests between two cards and the address always names a step. The text cards scroll through as the image moves, rather than stacking on top of one another. The change comes from feedback in several workshops, where users reported finding it easier to plan their sites as a string, rather than a stack, of cards.
+- **Text cards are sized to their content and the window.** The new step card system allowed us to accommodate cards of different sizes and to show as much of the underlying objects as possible. On the horizontal layout, a card now takes the height its answer needs, where it used to fill a fixed box 80% of the window tall, and its width follows the window's width and height, between 37% and 52% of the width. It never scrolls the answer, and only a long answer is set in smaller type. A window between 481 and 632 px tall that is too narrow for the card its height needs uses the vertical layout, and the video, the audio waveform and the image viewer beside the card follow its width.
+- **Glossary entries can be key terms, primary sources, people or entities, or places.** Give each entry a kind in an optional `kind` column (`tipo` in Spanish) or in a markdown entry's front matter; entries without one are terms, as before. You can add kinds of your own under `glossary: kinds:` in `_config.yml`, each with a label and a heading. The glossary panel names an entry's kind above its title, and the glossary page groups entries under a heading for each kind. A glossary of terms alone looks as it did.
+- **A glossary entry can sit beside the text as a callout.** A `:::glossary` widget with `entry:` and `align:` (right or left) draws a box in the margin of the text with the entry's kind, icon and title, and opens the glossary panel as an inline link does.
+- **Links can open a specific page of a multi-page object.** An object page opens at the page named by `?page=N`, and as the reader turns pages the address follows, so a link copied from it opens the page they were looking at.
+- **Links can open a glossary entry, and the address bar moves the story.** A link such as `#s7l2g1` opens step 7's two layers and then the glossary entry. Typing a new step in the address bar, following a link within the page or going Back now moves an open story to the step and panel named.
+- **Home and End go to the start and the end of a story.**
+- **SVG images can be used as objects.** The build turns them into tiled images like any other.
+- **The objects page now says when nothing matches** a search or filter, where the grid used to empty without a word.
+- **Screen readers announce when the share panel has copied** a link or embed code. There was no feedback before, so we fixed it.
+
+### Changed
+
+- **Each step's answer is held to what its text card can show.** Text cards are meant for a short answer, with longer writing in the layer panels. In the past, long entries spilled over and created multiple issues. The build now holds an answer to 18 lines and five paragraphs, counting 53 characters to a line and two lines for each paragraph after the first: roughly 150 words in a single paragraph, fewer when it is split. An answer within the limit fits its card without scrolling, and one longer than 15 lines is set in slightly smaller type. A longer answer is cut at a whole paragraph, then at a word, never inside a link or a formula. Widgets, images, tables, code and footnotes belong in a panel and are removed from answers, and headings, quotes and lists become plain paragraphs. The build log names each story and step it shortened, and the upgrade lists them before your first build so you can move the text into a panel.
+- **A video or audio step can put its card below the player.** On the horizontal layout the card moves below the player when that gives the player at least 15% more room.
+- **iPads use the previous and next buttons.** Every iPad now gets button navigation in either orientation, including those whose browser reports itself as a Mac, where touch scrolling could advance a step and then stick. The buttons now also appear correctly on the horizontal layout.
+- **Each step is framed as its author set it.** A zoom below 1 now zooms out, down to a tenth of the whole-object view; an overview step centers the whole image; a wide image is no longer published closer in than its author set it (by a fifth at 4:3); and a detail near an image's edge stays whole beside the card rather than sliding under it. Positions captured on an object page now replay where they were taken.
+- **Theme text is always legible on its background.** For each colored background (buttons, the two panel layers and the glossary panel) the build checks that the text reaches WCAG AA contrast, and picks a better color where the theme's does not, printing a line for each color it replaces. Among the shipped themes this changes neogranadina's layer 1 panel text and santa-barbara's button text. Panel titles now take their theme colors, which a stylesheet ordering problem had kept from applying.
+- **Spreadsheet cells are read as you typed them.** `NA`, `N/A`, `null` and `None` are text, not empty cells; a year no longer publishes as 1890.0; `007` and `7` stay different object IDs; and a stray comma at the end of a row no longer shifts its values one column to the left.
+- **The build stops on a sheet it cannot read correctly**, rather than publishing the site without it. That covers a sheet with two columns that mean the same thing (`privado` beside `protected`, or `Note` beside `note`), a column named `_metadata`, and a project or objects sheet that cannot be converted. The message names the sheet and the columns to fix. A story sheet that cannot be converted still drops only that story.
+- **Two objects with the same ID now show as one.** The build keeps the last row and warns, naming both, where different parts of the site used to show different rows.
+- **Object pages load only the viewer they need.** An image, video or audio page loads its own bundle (`object-image.js`, `object-video.js` or `object-audio.js`) instead of one holding all three viewers, and an audio page finds its file at once. If you have customized `_layouts/object.html`, compare it with the new one.
+- **Upgrade reports say what happened, in your site's language.** An upgrade that stops part-way names the version your site reached and says a re-run continues from there. The summary, its change lines and its manual steps are in your site's language, and each manual step says whom it is for, so a site without a Google Sheet is no longer told to edit one. `telar.release_date` records the date of the release installed, not the day the upgrade ran.
+- **A file missing from a release no longer stalls an upgrade.** The upgrade flags the file in its summary and finishes; a timeout or a network failure still stops it, so a re-run can complete the job.
+- **Sites no longer publish Telar's test suite or a second copy of their pages.** `tests/`, `pytest.ini`, `vitest.config.js` and `telar-content/texts/` join `exclude` in `_config.yml`, and the upgrade adds them. Without the last, Jekyll published every page source a second time, raw, at a second address.
+- **Site builds are leaner and run on current tools.** A build installs only what it needs, and the build, upgrade and test workflows run on Python 3.12 and Node 22. `requirements.txt` holds pandas below 3.1.
+- **A page's browser-tab title** comes from `title_key` only when it names a `navigation.*` string; anything else falls back to the page's own title, with a warning naming the file.
+- **The footer credits the theme's creator again**, and a missing language string falls back to English instead of showing nothing.
+
+### Fixed
+
+- **Private stories headed `privado` or `protegido` were published unencrypted.** Telar accepted `privada` and `protegida` only, so a story marked with either masculine form was never recognized as protected and was published openly, with no warning. All four spellings work now. See Notes.
+- **Self-hosted images could disappear after a quiet week.** GitHub deletes a site's saved image tiles after seven days without use, and the build decided whether to remake them from the last commit alone, so a text edit to a site that had been quiet for a week published it with every self-hosted image missing, on a run that reported success. The build now checks what it restored and remakes the tiles when nothing came back. Renaming an image, changing which objects are self-hosted or correcting the site's address now remakes them too, and audio waveforms get the same check. Both need the new `build.yml` (see Notes).
+- **Maths now publishes correctly everywhere, not only in panels.** Widgets, bibliographies, carousel captions and credits, image captions, pages and glossary definitions lost backslashes, encoded `&` and turned `*` into italics inside formulas. They are now protected wherever markdown is converted. Maths inside other maths, such as `$\ce{H2O}$`, publishes as written; a glossary entry with maths renders on any page; and maths renders in cards and panels that open before KaTeX has loaded, as after unlocking a private story.
+- **Carousel images given as file names load.** They were published with a literal `{{ site.baseurl }}` in their address, and can now live in `assets/images/` or `telar-content/objects/`. An image given as a bare file name in a glossary definition or a page now loads on a site served under a subpath.
+- **Glossary links go to the right page.** A link now uses the address its entry is actually published at, which on a case-sensitive host it often did not; links go only to pages the build writes; a comment row or the Spanish header row of a bilingual glossary no longer becomes an entry; your own entry wins over a demo entry at the same address; `[[term]]` inside code, inside an image's description or inside a link's text is shown as written; and two entries that would publish at one address are reported, keeping the first.
+- **Footnotes are numbered in reading order.** Each widget section numbers its own, return links go to the right note, their tooltip is in your site's language, and a footnote marker inside an HTML attribute no longer breaks the tag.
+- **Panel files load as written.** A panel file opening with a `---` rule no longer loses its first section; a title with quotes or escapes reads as typed; front matter that parses but cannot be used keeps the panel, with a warning; and `<div markdown="1">` containers left open are closed, with a warning, instead of the panel rendering empty.
+- **Moving through a story is more reliable.** A keypress during a move is no longer lost; the keyboard keeps working after the reader scrolls; resizing the window keeps the reader on their step; a jump from the contents or a link leaves every card and object where it belongs; a story that opens with a title card can reach it; Back to Start and contents links close open panels first; Space on a focused button presses the button; a held key moves one step at a time; keys typed in the Share dialog stay in it; and an embedded story's buttons follow the step it is on.
+- **Images load faster and respond to taps.** The tiles a step needs are fetched before the viewer asks for them; tap-to-zoom works again after the first move on button navigation; and a video beside the card stays clear of the card and of the controls at the top.
+- **Audio and video play as expected.** A fast run of keypresses no longer stacks two waveforms over a step, a video no longer keeps playing after the reader leaves it, and the story no longer asks for audio waveform data the build did not make.
+- **Coordinates that are not numbers are reported.** The build log and the story's intro name the story, step and column, where the viewer used to fall back to the whole object without a word. `0,5` is read as 0.5.
+- **Spreadsheet values no longer disturb their neighbors.** A bad value in a story's page column is reported without stopping the build or clearing the valid ones; a blank order in the project sheet no longer renumbers the other stories; and reordering the objects sheet no longer changes the objects sampled on the home page.
+- **More image formats work.** `.heic`, `.heif`, `.gif` and `.bmp` objects are all recognized and tiled, and an external IIIF manifest holding a plain image opens.
+- **Unusual values no longer break the build.** An object ID beginning with `*` or a quotation mark in a year no longer breaks a page, and a glossary entry's related terms are listed correctly.
+- **Panels and labels work with screen readers and in your site's language.** Whatever an open panel covers is skipped by the keyboard and by screen readers; a panel without a title is headed by its button's label in your site's language; the objects filter, the share panel's fallback message and file sizes are in your site's language; and a private story's description for search engines is plain text.
+- **Upgrades from before 0.9.0 finish.** They no longer stop at a private demo story they cannot encrypt, and an old page's own `layout` and `permalink` no longer collide with the page the build makes from it.
+
+### Removed
+
+- **`assets/js/object-page.js`.** The three per-type bundles replace it, and the upgrade removes it.
+- **The root `migration.json`** left by an earlier upgrade, which Jekyll published as a page. The upgrade removes it.
+- **The `panels.glossary_term_prefix` language string**, replaced by one label for each glossary kind. If your language file set it, set the kind labels instead.
+- **`audio_duration` in audio objects' front matter.** Nothing read it; the object page shows the duration the player reports.
+
+### Notes
+
+- **Upgrade with the "Upgrade Telar" workflow.** It takes a site from v1.7.0 to v1.8.0, and chains through from earlier versions. Migration script: `scripts/migrations/v170_to_v180.py`. Before your first build, the upgrade repairs a sheet whose duplicate columns would now stop the build (one column holds the values, the others are empty) and lists the answers the build will shorten.
+- **If you keep your stories in a spreadsheet, check the column that marks a story private.** If it used `privado` or `protegido`, treat those stories as having been public until now: the next build encrypts them, but it cannot undo what was already published.
+- **Recopy `.github/workflows/build.yml` by hand** from the template, unless you upgrade through the Telar Compositor, which updates it for you. GitHub does not let the upgrade workflow change workflow files, and without the new one the image and audio fixes above do not reach your site, and its builds stay on the old Python and dependencies. Recopying `upgrade.yml` is optional, and `telar-tests.yml`, which runs Telar's own tests, can be recopied or deleted together with `tests/`, `pytest.ini` and `vitest.config.js`.
+- **If your site reads a Google Sheet**, delete from the sheet any column the upgrade summary names: the upgrade fixed your local copy, but the build reads the sheet again.
+
+## [1.7.0] - 2026-09-09
+
+Migration consolidation and stewardship release. This release rebuilds the upgrade path: one migration now carries a pre-v0.9.0 site forward where eighteen did, the engine reads the chain off the migration files instead of a hand-kept list, and a site's `scripts/upgrade.py` downloads and runs the newest release's verified tooling rather than the aging copy it came with. The encryption step now finds a protected story at the page Jekyll actually produced, so a story whose identifier contains an underscore builds again. The JavaScript that lived inside six layouts and includes now ships as bundles. Telar now needs Ruby 3.2, and the dependency floors move. The upgrade delivers every framework file on its own; you recopy three workflow files by hand (see Notes).
+
+### Added
+
+- **A carousel item can declare its size.** When an item gives `width` and `height`, the build never opens the image to measure it. Until now the build downloaded every carousel image just to read its aspect ratio, ten of them per story on a site with demo content, each with a ten-second timeout; offline, the fetch failed silently and the carousel fell back to its default height, so a carousel's layout depended on whether the build machine could reach the images that day. An item that declares nothing, or only one value, still goes through the measurement. The published demo bundles now carry the dimensions, so a site with demo content fetches nothing at build time on any framework version from 0.6.0 onward.
+
+### Changed
+
+- **Eighteen upgrade steps become one.** A site on any release from 0.2.0-beta to 0.8.1-beta now reaches 0.9.0-beta in a single hop. We checked the new step file by file against the old chain from every entry version and content state, and checked that the site it leaves still builds. The manual instructions collapsed with it: a site entering at 0.2.0-beta used to receive 43 separate instructions, among them three separate demands to replace the same workflow file and feature tours for releases it had never run. It now receives four, plus the demo-content notice. Two of the old instructions were also wrong: they pointed at a workflow file and a documentation page that a site at that version cannot use.
+- **`scripts/upgrade.py` is now a launcher.** A site's copy of the upgrade tooling knows only the releases that existed when someone made the copy, so a site created at an older version could ask its own tooling, hear that it was current, and stay several releases behind while reporting success. `scripts/upgrade.py` now resolves the newest release, downloads its tooling, verifies the SHA-256, and runs the engine, `scripts/telar_upgrade.py`, from there, so a local upgrade always runs current code. After a full upgrade on a site that holds the launcher, the engine retires the site's own `scripts/migrations/` directory, since the migrations that run come down with the verified engine.
+- **The engine discovers the upgrade chain from the migration files.** It reads the chain and the latest version off `scripts/migrations/` rather than a list kept by hand, so a migration cannot ship unregistered (which is what stopped v1.6.0's upgrade), and a chain with a gap or a duplicate entry point stops at once instead of running short and reporting success.
+- **The engine accepts a `v`-prefixed version.** A `_config.yml` that reads `version: v1.6.2` now counts as that version instead of triggering an "unsupported version" report.
+- **The build stops on a Jekyll destination conflict.** Jekyll reports two files claiming the same destination as a warning and then exits successfully, leaving a page silently missing from the site. The build workflow now reads the build log and fails on that warning, because on a site with protected stories the missing page can be the one a story's ciphertext lands on.
+- **Page JavaScript has moved out of the layouts.** The object page, the home page, the objects index, the IIIF URL warning, the objects filter, and the share panel are now ES modules that esbuild bundles, one bundle per page, each declared in `package.json` and built by `npm run build:js`. The layouts and includes hand their data to the bundle in a JSON block instead of setting Liquid-written globals. Behavior does not change, and the layouts load the same script paths as before. Two consequences for sites that have gone beyond the template: if you have customized `_layouts/object.html`, `_layouts/index.html`, or `_layouts/objects-index.html`, the whole tail of the file changes on upgrade; and site JavaScript that read `window.TelarIIIF`, `window.objectsData`, or `window.telarIIIFWarningConfig` will not find them any more. We never documented any of the three.
+- **Telar needs Ruby 3.2.** `Gemfile` now declares `ruby ">= 3.2", "< 4.0"`, and a new `.ruby-version` names 3.2.11, the interpreter CI builds with. `Gemfile.lock` resolves `public_suffix` 7, which needs Ruby 3.2; on an older Ruby, bundler did not fail but quietly resolved that gem back down and rewrote the lock file, so you could commit a lock that one machine had constrained and nothing would notice.
+- **Dependency floors move up.** Python: pandas 3.0.5, markdown 3.10.3, cryptography 50.0.1, Pillow 12.3.0, PyMuPDF 1.28.2, pillow-heif 1.6.0, pytest 9.1.1, playwright 1.62.0, pytest-playwright 0.9.0. npm: Lenis 1.3.26, esbuild 0.28.2, jsdom 30.0.1, vitest 4.1.11. Behavior does not change.
+- **Action pins move up** in all three workflows: `actions/checkout` v7, `actions/setup-python` v7, `actions/setup-node` v7, `actions/cache` v6, and `ruby/setup-ruby` at v1.321.0, still pinned by commit SHA.
+
+### Fixed
+
+- **A protected story whose identifier contains an underscore.** As it generates the site, `generate_collections.py` now records every story's rendered page under `_data/telar-build/`, and the encryption step reads that record instead of deriving a URL from the story identifier. A story identified as `my_story` renders at `/stories/my-story/`, and the encryption step used to look for it at the unslugified path and fail to find it. Two refusals come with the fix, both before the build writes any file: when two stories would render at the same page, the build stops and names both identifiers and the shared URL, where before it published one story and gave the other no page at all; and an authored page can no longer declare a story's URL as its own permalink and take that destination from the story.
+- **The build clears protected stories' temporary pages unconditionally.** Telar renders each protected story's steps into a temporary page so the build's encryption step can read them, encrypt them into the story, and delete the page. That page holds the steps as plaintext and must never reach your published site. We found two conditions that could leave one behind, a build run before `project.json` existed and a build run with stories skipped, and nothing downstream would then remove it. The build now clears the pages at its start, before either condition can apply, and a build that still carries one with no protected story to claim it stops and names the pages instead of publishing them. You need to do nothing: a site that publishes through the "Build and Deploy Telar Site" workflow could not reach this, since git does not track the directory these pages live in and every run starts from a fresh checkout and regenerates the data files first. Reaching it meant building locally, in a working tree that already held one of these pages, and publishing that build by hand.
+- **Whole-word search on the objects index.** The filter sent a query to the search index only in its prefix form, which bypasses the stemmer and matches against stems, so any whole word the English stemmer shortens found nothing: "landscape", "calibration", and any name it truncates returned no results. The filter now sends both the bare word and the prefix, so a whole word matches through the stemmer and a partial word still matches as a prefix.
+- **Coordinates copied from a single-page object.** The copy button appended a page number to the coordinates of objects that have only one page. It now appends a page number only for multi-page objects; a multi-page PDF still copies its page.
+- **PDF pages declared a single image size.** Each page's `info.json` listed only the smallest derivative that the tiler itself wrote, so the viewer and any tool that reads the manifest had a smaller thumbnail to choose from than the tiles on disk offered. Every page, and the object's root `info.json`, now declares all of the pre-generated sizes. Existing tile sets keep their old `info.json` until the site regenerates tiles, which the build workflow does when the images change.
+- **A framework file that is an image now reaches the site.** The upgrade decoded every file it fetched as text, so it could not deliver a binary framework file at all, and the failure aborted the upgrade. It now carries fetched files as bytes where they are not text, through the staged write and the rollback backup alike.
+- **A failed download no longer counts as a change applied.** Migrations now report a failed fetch in wording the engine reads as a failure, so an upgrade stops rather than reporting success without having delivered the file.
+- **The upgrade speaks the site's language.** The records a failed upgrade writes into the upgrade summary, which you commit to your own repository, and the console output of the upgrade's steps now follow `telar_language` instead of appearing in English on a Spanish site.
+
+### Removed
+
+- **`assets/js/iiif-thumbnails.js`.** The thumbnail resolver it published as `window.TelarIIIF` now lives in `assets/js/iiif-thumbnails/`, and the home page and the objects index bundle it. Those two pages were its only readers.
+- **`scripts/telar/processors/objects.py`.** The package at `scripts/telar/processors/objects/` replaces it. The upgrade deletes the old file as well as installing the package, since a site that holds both would import the package and leave the file inert but present.
+- **The eighteen individual pre-0.9.0 migration modules**, `v020_to_v030.py` through `v081_to_v090.py`. The single `v020_to_v090.py` replaces them.
+
+### Notes
+
+- The "Upgrade Telar" workflow upgrades a site from v1.6.2 on its own, and chains through from earlier versions. Migration script: `scripts/migrations/v162_to_v170.py`.
+- **You recopy three workflow files by hand** from the template unless you upgrade through the Telar Compositor, which updates all three on its own. GitHub does not allow the upgrade workflow to modify workflow files: `.github/workflows/build.yml` (the destination-conflict check and the new action pins), `.github/workflows/upgrade.yml` (it now runs the engine rather than the launcher, which would otherwise download the tooling a second time), and `.github/workflows/telar-tests.yml` (action pins).
+- **Upgrading locally** now needs Ruby 3.2 or newer, and one extra step for a site that has never used the workflow: a site's own upgrade tooling knows only the releases that existed when someone copied it, so it cannot discover this release by itself. Install this release's `scripts/upgrade.py` once; from then on the launcher fetches the current tooling every time.
+
+## [1.6.2] - 2026-07-17
+
+Upgrade environment repair release. Fixes the "Upgrade Telar" GitHub Actions workflow, which has failed with a Python `ModuleNotFoundError` for every site upgrading to v1.5.0 or later — the workflow installed only two of the packages the upgrade's data-regeneration step needs. `upgrade.py` now installs its own dependencies as a fallback, so upgrades succeed even on sites whose workflow file predates this fix (GitHub does not allow automated upgrades to modify workflow files). Also repairs two regressions from earlier releases: a `package-lock.json` left out of sync by the v1.6.0 upgrade, and a missing guard that let Telar's internal framework tests run — and fail — on user sites. Tooling and workflows only — no site content, configuration, or display changes.
+
+### Fixed
+
+- **Upgrade workflow `ModuleNotFoundError`.** The "Upgrade Telar" GitHub Actions workflow installed only `pyyaml` and `pandas`, but the upgrade's data-regeneration step also needs `markdown`, `Pillow`, `jinja2`, and `cryptography`. No workflow-driven upgrade targeting v1.5.0 or later could have succeeded. The workflow now installs the full `requirements.txt`, matching the build workflow.
+- **Upgrade tooling now self-sufficient.** `upgrade.py` installs its own dependencies from the release's tooling bundle before regenerating data, with a fallback to the site's own copy. This means upgrades succeed even on sites that haven't recopied the fixed workflow file above.
+- **Corrected `package-lock.json`.** The v1.6.0 upgrade left `package-lock.json` out of sync with `package.json`, which broke `npm ci` in site test workflows. This release ships a regenerated, matching pair, and the v1.6.2 migration re-applies both together on upgrade.
+- **Framework tests no longer run on user sites.** A guard that keeps Telar's own test suite from running on user sites was dropped in v1.5.0, causing spurious test-failure emails whenever dependabot opened a pull request on a user site. The guard is restored.
+- **No more duplicate upgrade issues.** Re-running the "Upgrade Telar" workflow no longer files a second upgrade issue alongside an existing open one for the same version.
+
+### Removed
+
+- **`.github/dependabot.yml`.** Dependency updates are managed through the Telar release process, not per-site. The file is removed from the template and, via the v1.6.2 migration, from existing user sites. Repository-level GitHub security alerts are unaffected.
+
+### Notes
+
+- Migration script `scripts/migrations/v161_to_v162.py` upgrades automatically from v1.6.1 (and chains through from earlier versions). Two manual steps: recopying `.github/workflows/upgrade.yml` from the template is recommended but not urgent, since `upgrade.py` now self-installs its dependencies regardless; recopying `.github/workflows/telar-tests.yml` stops Telar's framework tests from running on your site. The `dependabot.yml` removal is informational only.
+- New consistency tests run in Telar's own CI on every pull request to catch this class of workflow/dependency mismatch before it ships again.
+
+## [1.6.1] - 2026-07-11
+
+Upgrade-tooling fix release. The v1.6.0 upgrade could not actually be applied: the upgrade script never registered the v1.6.0 migration, so direct upgrade runs stopped at v1.5.4 while reporting success — and the release was missing the verified tooling package the "Upgrade Telar" workflow downloads, so workflow runs failed before making any changes. Both are fixed; upgrading to v1.6.1 applies everything v1.6.0 contained. No site content, configuration, or display changes.
+
+### Fixed
+
+- **Upgrade chain repaired.** `scripts/upgrade.py` now registers the v1.5.4 → v1.6.0 migration (the migration itself shipped with v1.6.0 but was never wired in) and the new v1.6.0 → v1.6.1 step. Upgrades from any earlier version now run through to v1.6.1 and stamp the version they actually installed.
+- **Verified tooling package published.** The `telar-scripts-v1.6.1.tar.gz` release asset and its checksum, which the "Upgrade Telar" workflow requires since v1.5.0, ship with this release (v1.6.0 shipped without them, so the workflow failed closed before touching any site).
+
+### Notes
+
+- If an upgrade run reported success but left your site at v1.5.4, run the upgrade again — the chain now continues through to v1.6.1. If the "Upgrade Telar" workflow failed with a download error, that was this bug.
+- No site was ever left broken or half-upgraded: the workflow path failed before starting, and the direct path completed a valid upgrade to v1.5.4.
+
+## [1.6.0] - 2026-07-10
+
+Code health release. Housekeeping across the whole framework — verified dead-code removal, consolidation of duplicated logic, honest labelling of generated vs source files — plus a rebuilt private-stories pipeline, a localization sweep, and a long tail of fixes. Framework files and language packs upgrade automatically; one manual step is required for sites that use private stories (see Notes).
+
+### Changed
+
+- **Private stories rebuilt.** Encryption now happens after the site is built, from the fully rendered page: unlocked stories render glossary links, LaTeX, and localized errors exactly like open stories. The build scans its own output for private content before publishing, and a site with private stories and an outdated build workflow fails on purpose rather than publishing unprotected.
+- **Localization sweep.** Interface text that was hardcoded in English now follows the site language (media-type labels, audio controls, story chrome, glossary headings, panel errors, carousel controls, degraded-mode navigation, upgrade alerts, embed banner fallback); pipeline warnings and the upgrade summary are generated in the site's language.
+- **Theme colours where they belong.** Headings, glossary letters, filter toggles, and panel blockquotes follow the active theme; DEMO labels use the brand colour; the accordion focus ring is visible again.
+- **Code health.** Over 750 lines of verified dead code removed; duplicated logic consolidated to single homes (media-type lists, SCSS mixins, pipeline helpers, IIIF thumbnail resolution, object-page theme/video logic, KaTeX configuration); generated files carry generated-file banners and are marked linguist-generated; comments state constraints instead of narrating history. No reader-facing changes.
+
+### Fixed
+
+- Alt text from the objects CSV now reaches object pages and story steps (from Ana María Cárdenas Gasca's fix).
+- Audio clips honour `clip_start` on first play, not only after looping.
+- LaTeX in a step's question or answer (without layer text) now loads the renderer.
+- Local tile generation without libvips produces tiles the viewer can actually request; the generator names its backend and recommends libvips.
+- The objects page no longer makes doomed image-server requests for video/audio objects; thumbnail resolution is hardened across IIIF profile variants.
+- Panels: no instance leak on reopen, state stays in sync on outside dismissal, close icon shows in vertical/embed layouts.
+- Embedded stories use the site-wide 1024px responsive boundary; button navigation starts from the intro card; uppercase audio extensions recognised; palette-transparency images composite onto white; a text step without coordinates shows the full object; title-card text renders as plain text per its contract.
+
+### Notes
+
+- **Manual step for private-story sites:** v1.6.0's build workflow adds the encryption step, and GitHub does not allow automated upgrades to modify workflow files — recopy `build.yml` from the template (the Compositor does this automatically). Until then, marking a story `private: yes` fails the build by design. See the release notes for details.
+- Language packs are replaced wholesale on upgrade, as in previous releases — re-apply customisations.
+- Known issues: two long-standing story-engine behaviours (a card briefly lingering over the title after "Back to Start"; the URL step fragment not updating during ordinary scrolling) ship documented, to be fixed at the root by a planned story-engine restructure.
+
+## [1.5.4] - 2026-06-29
+
+CI/build fix release. Adds a GitHub Pages concurrency group to the build workflow so rapid successive builds of the same repository no longer race on Pages' one-deployment-per-repo limit. CI only — no content, schema, or configuration changes. Upgrade in place or simply redeploy.
+
+### Fixed
+
+- **Spurious "build failed" emails on rapid successive builds.** GitHub Pages allows only one in-progress deployment per repository, so when several builds started within the same second (for example, when a new site is created and multiple commits plus a manual run land together) the losing runs failed their "Deploy to GitHub Pages" step and emailed the owner, even though the site deployed correctly. Build runs are now grouped per branch with a `concurrency` setting and superseded runs are cancelled, so the newest build wins cleanly with no failure noise.
+
+### Notes
+
+- The only changed framework file is `.github/workflows/build.yml`. The Telar Compositor updates it automatically on upgrade; sites upgrading via the "Upgrade Telar" Actions workflow or locally must add the `concurrency` block by hand, since GitHub does not allow automated upgrades to modify workflow files (see the release notes for the exact snippet).
+
+## [1.5.3] - 2026-06-23
+
+Internationalization fix release. Built-in interface text that still showed in English on Spanish-language sites (`telar_language: es`) now follows the site language. Display only — no content, schema, or configuration changes. Upgrade in place or simply redeploy.
+
+### Fixed
+
+- **Interface text now follows the site language.** Several built-in strings were hardcoded in English and stayed untranslated on Spanish sites: the "Back to Collection" and "Back to Glossary" links, the coordinate tool button with its Copy X / Y / Zoom and copy-manifest tooltips, the "Image Viewer Unavailable" alerts, the Google Sheets and theme configuration-error banners, the thumbnail "Loading..." placeholders, and the footer credit line. They now read from the language pack and follow `telar_language`.
+- **Objects and glossary headings now translated.** The objects and glossary page headings, and the Medium/Genre and media-type filter labels on the objects page, now follow the site language instead of showing in English.
+- **Duplicate browser-tab title on translated pages.** Translated pages emitted two `<title>` tags, and the second (added by the SEO plugin) was always English. Each page now has a single, language-aware title. The home, objects, and glossary browser-tab titles follow the site language through a new optional `title_key` field (see Migration).
+
+### Changed
+
+- **Objects page wording (English sites).** The objects page now takes its heading and browser-tab title from the language pack: the browser-tab title reads "Objects" (was "Objects in the Stories") and the page heading reads "See the objects behind the stories". Spanish sites already used these strings.
+
+### Notes
+
+- Social-share preview titles (`og:title` / `twitter:title`) still come from the static English page title and remain English on translated sites. The SEO plugin binds them to page front matter and cannot suppress just the social title; this is a known, separate limitation.
+
+## [1.5.2] - 2026-06-13
+
+Small fix release for the validation warning banners. Display only — no content changes and no manual steps. Upgrade in place or simply redeploy.
+
+### Fixed
+
+- **Glossary warning message.** When a story references a glossary term that doesn't exist, the warning showed a literal `{{ file_path }}` placeholder and pointed only to `telar-content/texts/glossary/`. It now names the missing term cleanly and points to your glossary spreadsheet as well as the markdown folder.
+- **Story banner heading shown twice.** The warning banner on a story's intro card repeated the same line as both its heading and its description; it now has a proper heading.
+- **Homepage warning banners now translated.** The "Object configuration issues detected" and "Story configuration issues detected" banners on the homepage (headings and the "Navigate to ... to see more details." line) were hardcoded in English; they now follow the site language.
+
+### Dependencies
+
+- Routine dependency updates: `lenis`, `esbuild`, `vitest`, `@vimeo/player` (npm); `cryptography`, `jinja2`, `pillow-heif`, `playwright`, `pyyaml` (Python); `ruby/setup-ruby` (CI). No behavior change.
+
+### Notes
+
+- The README version badge had lagged at 1.4.0 through the last two releases; it is now correct.
+
+## [1.5.1] - 2026-06-10
+
+Small fix release for glossary auto-linking. The `[[term]]` syntax now works in story step texts, and glossary terms match regardless of letter case. Runtime and tooling only — no content changes and no migration. Upgrade in place or simply redeploy.
+
+### Fixed
+
+- **Glossary links in story step texts.** Writing `[[term]]` in a story step's answer text now creates a glossary link, just as it already did inside layer panels. Previously the brackets published as plain text. The question line is a heading and is intentionally left as plain text.
+- **Case-insensitive glossary terms.** `[[Term]]`, `[[term]]`, and `[[TERM]]` now all resolve to the same glossary entry, matching whatever id the glossary defines (so an acronym written `[[IIIF]]` links correctly). The link points at the glossary entry's own page regardless of how the term was typed.
+
+### Notes
+
+- In password-protected stories, a `[[term]]` in the step text shows as plain text (the term's name) rather than a clickable link. Glossary links inside layer panels still work in protected stories. (Inline glossary links in the step texts of protected stories may come in a later release.)
+
+## [1.5.0] - 2026-06-06
+
+Robustness and security release. Runtime and tooling only — no content changes; existing stories, objects, and configuration continue to work unchanged. This release hardens the build pipeline, the story viewer, and the automatic upgrade workflow, adds defensive input handling and output escaping throughout, and removes the last third-party CDN dependency by vendoring the audio waveform library. The automatic upgrade applies everything except two manual steps (see Migration).
+
+### Security
+
+- **Output escaping throughout.** Author-supplied content (titles, alt text, captions, questions and answers, glossary terms, image attributes) is now escaped at every render sink, in both the Python build and the JavaScript runtime. Jinja2 autoescaping is enabled for widget rendering.
+- **TLS certificate verification restored** on all Google Sheets and IIIF manifest fetches (verification had been disabled).
+- **Protected (password-locked) stories.** The build now fails closed if a protected story cannot be encrypted, instead of shipping it as plaintext; PBKDF2 iterations raised from 100,000 to 210,000; encrypted stories no longer expose byline, description, or SEO metadata; the in-browser unlock cache no longer stores decrypted content.
+- **Hardened automatic upgrade workflow.** It now downloads its tooling as a checksum-verified release asset and runs it in isolation, refusing to run unverified code. The target-version input is validated and passed safely.
+- **KaTeX math rendering** is constrained to safe links only.
+- **Path-traversal guards** on object IDs and story layer filenames, and size caps on all remote reads (Sheets, demo bundle, PDFs, IIIF).
+
+### Changed
+
+- **Audio waveform library vendored.** WaveSurfer is now served from your own site instead of a CDN, so audio stories and audio object pages work offline and carry no third-party runtime dependency.
+- **Upgrade engine.** Framework files are now installed atomically (all-or-nothing with backup and restore), and migrations are chained strictly, failing closed on any error.
+- **Dependency floors raised.** Minimum versions bumped for `pandas` (3.0.3), `markdown` (3.10.2), and `cryptography` (48.0.0), plus the test tools `pytest` (9.0.3) and `pytest-cov` (7.1.0). Sites upgrading in place are unaffected — the framework fixes use the standard library — so the new floors apply to fresh installs and the project's own CI.
+
+### Fixed
+
+- **IIIF viewer plate visibility.** The image plate now stays visible when navigating between steps that share the same object, and same-object focal interpolation uses the correct step list.
+- **Story panels.** Closing a panel is handled consistently (no double-close), and opening a layer panel correctly dismisses an already-open panel.
+- **Deep links.** Panel-open timers are cancelled if the reader navigates during load, so a panel no longer pops open over a different step.
+- **YouTube and Google Drive video sizing.** Non-16:9 videos are now sized to their true aspect (or given an intentional dark letterbox frame) instead of floating in the page background.
+- **Audio and scroll-engine lifecycle.** Resolved assorted race conditions and re-initialization issues.
+- **Theme button text.** Restored the button-text color fix (carried from a v1.4.0 hotfix that missed the v1.4.0 tag) so themed buttons no longer render with invisible text.
+- **Story step order.** Steps now render in the order of their `step` number rather than the spreadsheet's saved row order, so a story whose rows ended up out of sequence still displays correctly. Falls back safely to the saved order if step values are missing or non-numeric.
+
+### Migration
+
+- The automatic upgrade applies all of the above. Two manual steps remain, listed in your `UPGRADE_SUMMARY.md` after upgrading:
+  1. Update your two GitHub Actions workflow files (`upgrade.yml`, `build.yml`) by hand — GitHub does not allow the automated upgrade to modify workflow files. Your site keeps building if you skip this; the changes only harden your workflows.
+  2. Re-apply any customizations to the language packs (`en.yml` / `es.yml`), which were refreshed with the new protected-story sharing warnings.
+- No content changes: no CSV schema, story-step, or `_config.yml` key changes.
+
+## [1.4.0] - 2026-05-26
+
+Runtime upgrade with no content changes required. Existing stories, objects, and configuration continue to work unchanged. This release replaces the Tify viewer with a custom, self-hosted OpenSeadragon wrapper and rebuilds the responsive system around a single source of truth, fixing cross-device IIIF centering.
+
+### Fixed
+
+- **Cross-device IIIF centering**: Rewrote the focal-point algorithm using a two-circle model that derives a device-independent focal radius from the authoring aspect ratio and reads the measured text-card rectangle. Fixes focal points landing off-target across viewport widths, high-zoom near-bottom clipping, iPad portrait Y pinning, horizontal drift under zoom, and a low baseline. Verified on iPhone and iPad portrait via iOS Simulator and a 12-cell device matrix.
+
+- **Deep-link and in-story navigation jump**: `navigateToStep()` and `applyDeepLinkOnLoad()` previously used a manual scroll poke that left the scroll engine in a stale state, freezing the IIIF viewer at a partially-interpolated zoom. Both now use a forced immediate scroll with snap-index sync, giving a deterministic jump to the authored position.
+
+- **iOS Safari URL-bar layout jump**: All layout-affecting heights now use `dvh` with a `vh` fallback via `@supports`. Eliminates the reflow that occurred when the Safari URL bar showed or hid on scroll.
+
+- **Notch safe-area clearance**: Applied `env(safe-area-inset-*)` at the credits badge, mobile navigation buttons, and mobile text card using the `max(<offset>, env(...))` idiom.
+
+- **Hover styles on touch devices**: All `:hover` rules are now wrapped in `@media (hover: hover) and (pointer: fine)`, so touch devices no longer show sticky hover states.
+
+- **Reduced-motion compliance**: Smooth scrolling is disabled when `prefers-reduced-motion` is set, and IIIF pan/zoom animations apply immediately under the same preference.
+
+### Added
+
+- **Custom IIIF viewer**: New `assets/js/telar-story/iiif-viewer.js` and `iiif-manifest.js` wrap OpenSeadragon and parse IIIF Presentation API v2 and v3 manifests, supporting multi-page manifests, a pagination chrome for multi-page objects, and an error fallback UI. Scroll-to-zoom and click-to-zoom stay under Telar's scroll-engine control on story plates; object pages opt in to zoom gestures.
+
+- **`layout-mode.js` — responsive runtime module**: Replaces the binary `state.isMobileViewport` flag with a `state.layoutMode` abstraction (`'horizontal'` / `'vertical'`). Owns the single `resize`/`orientationchange` listener in the runtime and reads breakpoints from CSS custom properties so JS and CSS cannot drift.
+
+- **`--telar-*` CSS custom properties**: `_sass/_responsive.scss` is now the single source of truth for layout-affecting constants (breakpoints, card geometry, density tiers, audio/video scaling factors), mirrored to `--telar-*` properties on `:root` for JS to read via `getComputedStyle`.
+
+- **Container queries on `.text-card`**: `container-type: inline-size` added; font size, padding, gap, and line height inside the card now scale off the card's own width.
+
+- **Six `object.viewer.*` language keys** in `en.yml` and `es.yml` (`prev_page`, `next_page`, `page_input_label`, `page_input_aria`, `image_unavailable_title`, `image_unavailable_detail`) for the IIIF viewer chrome and error UI.
+
+### Changed
+
+- **Cascade layer order**: Bootstrap 5.3.0 is now loaded inside a `@layer` cascade layer, so Telar's own rules take precedence without `!important`. Over 150 Bootstrap-fight `!important` declarations removed across `_sass/`.
+
+- **Breakpoints recalibrated**: the vertical layout now activates at widths narrower than 1024px or aspect ratios narrower than 3:4, covering tablets in portrait as well as phones.
+
+- **Height-tier blocks consolidated**: nine `@media (max-height: ...)` blocks across the stylesheets collapsed into one block in `_sass/_responsive.scss`.
+
+- **Vendored OpenSeadragon 6.0.2**: `assets/vendor/openseadragon.min.js` (337 KB) replaces the Tify CDN load. Source and SHA-256 digest are recorded in `assets/vendor/README.md`.
+
+### Removed
+
+- **Tify IIIF viewer and Vue dependency**: removed the Tify CDN stylesheet and module imports from `_layouts/story.html` and `_layouts/object.html`, along with the 56 `!important` declarations in `_sass/_viewer.scss` that existed solely to hide Tify's UI chrome. Tify's ~529 KB CDN payload (469 KB JS + 60 KB CSS) gives way to a 337 KB vendored OpenSeadragon — about 190 KB less viewer code, served locally with no CDN dependency.
+
+- **`state.isMobileViewport`**: replaced by `state.layoutMode`.
+
+- **Stale bundle files**: `assets/js/telar-story.bundle.js` and `assets/js/telar-story-bundle.js` deleted (unreferenced leftovers from an earlier build naming scheme).
+
+## [1.3.0] - 2026-05-10
+
+i18n hygiene plus a new sister-file localization convention. Wires up Telar's existing language packs in places that previously hardcoded English, introduces a sister-file convention for localizing user pages, and refreshes the demo content to reflect current capabilities (multimedia, Telar Compositor, dual storytelling/collections framing).
+
+### Fixed
+
+- **Homepage headings rendered in English for Spanish users**: `_layouts/index.html` now resolves the stories and objects headings via `page.X | default: lang.pages.X | default: "<English literal>"`. Previously the layout dropped straight to the English literal when no `page.*` override was set, and the template's `index.md` shipped with English page-overrides that shadowed the i18n for every existing user with `telar_language: es`
+
+- **Empty-state messages and IIIF URL warning hardcoded in English**: `_layouts/index.html`, `_layouts/objects-index.html`, `_layouts/glossary-index.html`, and `_includes/iiif-url-warning.html` now reference `lang.empty_states.*` and `lang.errors.iiif_mismatch.*` keys that were already defined in both language files but never used. Spanish-language sites now show empty-state guidance and the IIIF mismatch troubleshooting modal in Spanish
+
+- **JS thumbnail fallback strings hardcoded in English**: `_layouts/index.html` and `_layouts/objects-index.html` now inject `TelarI18n` and `TelarI18nIIIF` constants from the lang values, so the "Failed to load" and "No image" placeholders displayed when a thumbnail fails appear in the site's active language
+
+- **Empty-state messages pointed at the wrong content directory**: empty-state guidance previously told users to add story/object/glossary files to `_stories/`, `_objects/`, or `_glossary/`. Those directories are auto-generated; the canonical user-content paths are under `telar-content/spreadsheets/` and `telar-content/texts/glossary/`. The lang values had the correct paths; wiring them up fixed both the i18n bug and the misleading guidance
+
+- **Migration script language detection for Spanish sites**: `BaseMigration._detect_language()` was looking for `telar_language` nested under the `telar:` block in `_config.yml`, but the key has always been a top-level key. Every Spanish-language site fell through to the English default for migration manual steps. The base class now reads the correct top-level key, so Spanish sites now get the Spanish-language manual steps in `UPGRADE_SUMMARY.md` and (in v1.3.0 specifically) the conditional `acerca.md` creation guard sees the correct language
+
+### Added
+
+- **Sister-file localization for user pages** (`telar-content/texts/pages/`): `scripts/generate_collections.py` now detects markdown files with frontmatter `localized_for: <canonical>.md` and `language: <code>`. When `site.telar_language` matches the sister's `language`, the build uses the sister's content but writes output under the canonical filename — so `/about/` resolves to the right language without URL duplication. The v1.3.0 template ships with `acerca.md` as the Spanish sister of `about.md`; users can add siblings for other languages following the same convention
+
+- **`lang.index_page.welcome`** key carrying the homepage welcome content as a multi-line markdown block scalar in both EN and ES. The default `index.md` body now renders `{{ lang.index_page.welcome | markdownify }}` with a bilingual EN/ES override comment explaining how site owners replace it with their own content
+
+- **`lang.pages.glossary_intro`** key for the glossary page intro sentence, paired with EN and ES values. `pages/glossary.md` body now references this key
+
+- **`lang.errors.iiif_mismatch.local_fix_check_config`** and **`local_fix_run_with_note`**: two missing keys completing the IIIF URL warning's local-development fallback section
+
+- **Migration script `v121_to_v130.py` and matching `migration.json` manifest**: conditional content cleanup that removes the three stale `index.md` frontmatter keys and replaces user-content bodies (welcome, glossary, objects, about) with the v1.3.0 lang-key templates only when a SHA-256 hash check confirms the file is byte-for-byte identical to the v1.2.1 default. Any user customisation preserves the file untouched. For sites with `telar_language: es` whose `about.md` is unchanged from the v1.2.1 default, the migration also creates `acerca.md` automatically so the site immediately renders Spanish content at `/about/`. Sites with a customised `about.md` skip this — otherwise the new sister file would shadow the customisation
+
+### Changed
+
+- **Default content of welcome and about pages refreshed** to reflect current Telar capabilities. Both now name both Telar modes (digital storytelling and publishing small digital collections), name multimedia coverage (IIIF images, video, audio, narrative text, contextual layers), present the three setup paths (Telar Compositor, GitHub template + Sheets, hands-on local), and link to the Telar Compositor. Previous content described Telar as it was around v0.7 (single-mode storytelling, GitHub template only, no audio/video, no Compositor)
+
+- **`pages/glossary.md`, `pages/objects.md`, `index.md`** rewritten to render via lang keys rather than hardcoded English. Each file carries a bilingual EN/ES HTML override comment explaining how to replace the default with custom content. The pattern uses `{% assign lang = site.data.languages[site.telar_language] | default: site.data.languages.en %}` at the top of the page (the layout's own `lang` assignment isn't visible to the page body, which Jekyll renders before wrapping in the layout)
+
+- **`telar-content/texts/pages/about.md`** rewritten with the refreshed copy plus a sentence in the Customize alert documenting the sister-file convention for site owners adding additional languages
+
+### Removed
+
+- **Stale `lang.pages.home_title` key** from both `en.yml` and `es.yml`. Defined since v1.0.0-beta but never referenced from any layout, include, or script
+
+## [1.2.1] - 2026-05-08
+
+Patch release with a demo content fetch fix and project metadata additions.
+
+### Fixed
+
+- **Demo content fetch tolerates v-prefixed `telar.version`**: `scripts/fetch_demo_content.py` previously raised `ValueError` internally when `_config.yml` had a v-prefixed version string (e.g. `version: "v1.2.0"`) and silently built sites with no demo content. An earlier version of the Telar Compositor's upgrade flow wrote v-prefixed strings into some sites; the compositor was fixed, but historical bad values persisted in upgraded sites. The fetcher now strips a leading `v` (or `V`) when reading the version and again as defence-in-depth when parsing entries from the remote `versions.json` index. A new warning surfaces in the build log if a site version cannot be parsed for any other reason. Sites with stale v-prefixed values continue to work; the value can optionally be cleaned up to a bare numeric version
+
+### Added
+
+- **`CITATION.cff`** with author and ORCID metadata for academic citation
+- **Migration script `v120_to_v121.py`** and matching `migration.json` manifest for the demo content fetch fix
+
+### Changed
+
+- **Expanded `package.json` metadata** (`version`, `description`, `license`, `author`, `contributors`, `homepage`, `repository`, `bugs`) for clarity in the npm/GitHub ecosystem
+
+## [1.2.0] - 2026-04-16
+
+Story structure and UX improvements.
+
+### Added
+
+- **Section card table of contents**: Stories with `show_sections: yes` in project.csv display a navigable TOC on the title card, listing every section card as a clickable link. The title card uses the layer 2 panel background color when TOC is enabled. Add `mostrar_secciones: si` for Spanish-language sites
+
+- **Back to Start button**: The "Back to Home" button in the top-left corner now switches to "Back to Start" once readers scroll past the title card. Clicking it returns to the title card. On mobile, the button shows a contextual icon (home or up-arrow)
+
+- **In-story navigation**: New `navigateToStep()` and `navigateToIntro()` functions allow jumping between steps from within the story, used by the TOC links and the Back to Start button
+
+- **Migration manifest**: Each release now includes a machine-readable `migration.json` describing content transforms, attached as a GitHub Release asset. The Telar Compositor uses these manifests to upgrade sites through its web interface
+
+### Changed
+
+- **Story card placeholders**: Homepage thumbnails now show the first letter of the story title instead of an auto-generated ordinal number. Related story links on object pages show the title only
+
+### Fixed
+
+- **Deep link parent panel stacking**: Deep links to layer 2 panels (e.g. `#s3l2`) now correctly open layer 1 underneath, so all parent panels are visible when arriving via a shared link
+
+## [1.1.0] - 2026-04-12
+
+Structural and navigational features for richer storytelling.
+
+### Added
+
+- **Deep linking**: Share URLs that point to a specific step in a story, optionally with a panel layer open. The URL fragment updates silently as the reader scrolls, and shared links open directly at the right position
+
+- **Title cards**: Chapter heading cards that appear between story steps. Mark a step row with an empty object to create a title card — it displays styled heading text without a media viewer and participates fully in scroll, keyboard, and button navigation
+
+- **Collection mode**: Set `collection_mode: true` in `_config.yml` to flip the homepage to a collection-first layout with large object thumbnails and stories below. Default mode is unchanged
+
+- **Bibliography styling**: Use the `:::bibliography` widget block in panel markdown content to format references with hanging indent (first line flush, subsequent lines indented)
+
+- **Share panel "this view" tab**: The share panel now includes a tab that copies the current URL with the reader's exact position
+
+### Fixed
+
+- **Panel scroll**: Wheel events inside open panels are no longer intercepted by the scroll engine. Users can scroll panel content freely without the story advancing
+
+- **Keyboard navigation in panels**: Arrow keys, Page Up/Down, and Spacebar now scroll panel content when a panel is open, instead of navigating story steps
+
+- **Video/audio not paused on title cards**: Media players now properly deactivate when scrolling from a video or audio card into a title card, in both directions
+
+- **IIIF viewer background on object pages**: The Telar weave pattern now shows correctly behind the IIIF viewer on object pages, instead of Tify's default grey dot grid
+
+- **Audio object detection**: Audio objects are now correctly detected even without the `audiowaveform` system dependency, via a new audio manifest generated during the CSV-to-JSON pipeline
+
+- **ArrowRight on first step**: Fixed an issue where pressing ArrowRight immediately after arriving at step 1 from the intro could fail because the scroll animation briefly reset the step index
+
+### Changed
+
+- **Panel DOM attributes**: All panels now carry a `data-telar-panel` attribute for consistent selector targeting
+
+## [1.0.0-beta] - 2026-03-25
+
+A new milestone.
+
+This is Telar's twenty-fourth release. For the first time, Telar can weave together images, video, and audio — a major new stage that we hope will help you tell all sorts of new stories. Together with a fluid scroll engine (no more jumping!), a new card-stack architecture, and the WYSIWYG [Telar Compositor](https://compositor.telar.org), these features round out the roadmap we first sketched when we started building Telar. It finally feels like a 1.0.
+
+None of this would have happened without all of you who tested early versions, reported what was broken, and told us what you needed. Thank you.
+
+— Juan
+
+### Added
+
+- **Video support**: YouTube, Vimeo, and Google Drive videos in stories and on object pages. Clip control (start, end, loop) lets you highlight specific segments
+
+- **Audio support**: Audio files with WaveSurfer waveform visualization in stories and on object pages. Clip regions for selecting segments
+
+- **Clip time picker**: Interactive tool on object pages for setting video and audio clip boundaries. Copy start/end times directly into your spreadsheet
+
+- **Card-stack scroll architecture**: Stories now use a continuous scroll model with magnetic waypoints instead of the previous step-by-step navigation. Cards slide over previous ones, creating a fluid reading experience
+
+- **Media type detection and filtering**: Objects are automatically classified as Image, Video, or Audio. The gallery page has separate type and medium filters
+
+- **Alt text support**: New `alt_text` column in story and object spreadsheets for accessibility descriptions, with automatic fallback to object titles
+
+- **Inline Lucide SVG icons**: All icons are now self-hosted inline SVGs, replacing the Google Material Symbols and Bootstrap Icons CDN dependencies
+
+- **Audio build pipeline**: New `process_audio.py` script for clip extraction and waveform peak data generation, integrated into the local build script and GitHub Actions workflow
+
+### Changed
+
+- **Scroll system**: Replaced the discrete step accumulator with Lenis continuous scroll and magnetic snap waypoints
+
+- **Card rendering**: New per-scene card pool with z-index banding replaces the previous split-column viewer/narrative layout
+
+- **Mobile layout**: Text cards are bottom-anchored on mobile with frosted glass styling
+
+- **Object pages**: Media-type-conditional rendering — images get the IIIF viewer with coordinate panel, videos get embeds with clip picker, audio gets waveform with region-based clip picker
+
+- **Gallery**: Video and audio objects show icon placeholders. Two separate filter sections (Type and Medium/Genre)
+
+- **Viewer preloading**: `max_viewer_cards` default reduced from 10 to 8
+
+### Removed
+
+- **Google Material Symbols CDN dependency**: Replaced by inline Lucide SVGs
+- **Bootstrap Icons CDN dependency**: Replaced by inline Lucide SVGs
+
+## [0.9.4-beta] - 2026-03-18
+
+PDF dependency fix.
+
+### Fixed
+
+- **PDF IIIF tile generation in CI**: PyMuPDF was not listed in `requirements.txt`, so CI skipped IIIF tile generation for PDF objects entirely. PDF objects now get tiles generated correctly during builds
+
 ## [0.9.3-beta] - 2026-03-14
 
 IIIF bug fixes, multi-page story improvements, and coordinate panel restyle.

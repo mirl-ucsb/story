@@ -1,6 +1,23 @@
 /**
- * Telar Widget System JavaScript
- * Handles initialization and interactivity for widgets
+ * Telar — widget client behaviour.
+ *
+ * Telar's content widgets — tabs, accordions, carousels — are built on Bootstrap.
+ * Most of them need no custom code: Bootstrap's data attributes drive tabs and
+ * accordions on their own. The one exception is the carousel, which is initialised
+ * here so we can override its defaults to suit a storytelling context.
+ *
+ * Carousels — each `.telar-widget-carousel` is set up for manual navigation only.
+ * Auto-advance is off (`interval: false`) because a slideshow that moves on its own
+ * fights the reader's pace; keyboard control is off because arrow keys belong to
+ * Telar's own story navigation and a focused carousel must not steal them; wrapping
+ * and touch/swipe stay on so the carousel feels natural to page through by hand.
+ *
+ * Initialisation runs on DOM-ready, or immediately if the document is already
+ * parsed by the time this script executes.
+ *
+ * Wrapped in an IIFE to keep its helpers out of the global scope.
+ *
+ * @version v1.6.0
  */
 
 (function() {
@@ -29,7 +46,7 @@
       const carousel = new bootstrap.Carousel(carouselElement, {
         interval: false,  // No auto-advance
         wrap: true,       // Allow wrapping from last to first
-        keyboard: true,   // Enable keyboard navigation
+        keyboard: false,  // Disable keyboard navigation (interferes with story navigation)
         touch: true       // Enable touch/swipe
       });
     });
@@ -42,8 +59,4 @@
     // DOM is already ready
     initWidgets();
   }
-
-  // Re-initialize when panels are dynamically loaded
-  // (for Telar's story navigation system)
-  document.addEventListener('panelLoaded', initWidgets);
 })();
